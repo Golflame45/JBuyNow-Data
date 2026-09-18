@@ -57,25 +57,27 @@ if check_password():
     
     base_df = load_data()
     
-    # Custom CSS for banner and KPI borders
+    # Custom CSS for banner and KPI borders (Dark Mode Compatible)
     st.markdown("""
         <style>
-        .pbi-banner {
-            background-color: #0000FF; color: white; padding: 10px;
-            font-size: 24px; font-weight: bold; text-align: center;
+        .pbi-bar {
+            background: linear-gradient(90deg, #FF007F 0%, #0000FF 100%);
+            color: white; padding: 10px;
+            font-size: 24px; font-weight: bold; text-align: left;
             border-radius: 5px; margin-bottom: 20px;
         }
         [data-testid="stMetricValue"] { font-size: 24px !important; }
         [data-testid="stMetric"] {
-            border: 1px solid #ddd; padding: 10px; border-radius: 5px;
-            box-shadow: 2px 2px 5px rgba(0,0,0,0.05); background: white;
+            border: 1px solid var(--secondary-background-color); 
+            padding: 10px; border-radius: 5px;
+            box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
         }
         </style>
-        <div class="pbi-banner">SHOPEE PERFORMANCE DASHBOARD</div>
+        <div class="pbi-bar">SHOPEE PERFORMANCE DASHBOARD</div>
     """, unsafe_allow_html=True)
     
     # ================= 1. Global Filters =================
-    col_f1, col_f2 = st.columns([1, 3])
+    col_f1, col_f2 = st.columns([1, 2])
     with col_f1:
         all_years = sorted(base_df['Year'].unique())
         selected_years = st.multiselect("ปี (Year)", all_years, default=all_years)
@@ -166,7 +168,7 @@ if check_password():
         "% Rev": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100)
     }
 
-    col_m1, col_m2, col_m3 = st.columns([1, 1.5, 1.5])
+    col_m1, col_m2, col_m3 = st.columns([1.2, 1.8, 2.5])
     with col_m1:
         st.write("**Order Month**")
         st.dataframe(
@@ -182,9 +184,8 @@ if check_password():
             fig.update_traces(textposition="top center", texttemplate='%{text:.2s}')
             fig.update_layout(
                 margin=dict(l=0, r=0, t=10, b=0), height=300, 
-                plot_bgcolor='white', paper_bgcolor='white',
-                xaxis_title="", yaxis_title="Revenue",
-                xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#eee')
+                xaxis_title="", yaxis_title="",
+                xaxis=dict(showgrid=False), yaxis=dict(showgrid=False)
             )
             st.plotly_chart(fig, use_container_width=True)
     with col_m3:
@@ -197,7 +198,7 @@ if check_password():
         )
 
     st.markdown("---")
-    col_d1, col_d2 = st.columns([1, 1.5])
+    col_d1, col_d2 = st.columns([1.5, 2.5])
     with col_d1:
         st.write("**Order Date (รายวัน)**")
         st.dataframe(
