@@ -313,16 +313,25 @@ if check_password():
                     master_df['Shop_Name'] = 'Official Shop'
 
         if not master_df.empty:
+            # Guarantee all numeric columns exist
+            for c in ['Revenue', 'Visitors', 'Buyers', 'Units_Sold', 'A2C', 'Orders']:
+                if c not in master_df.columns:
+                    if c == 'Orders' and 'ทั้งหมด' in master_df.columns:
+                        master_df['Orders'] = master_df['ทั้งหมด'].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
+                    else:
+                        master_df[c] = 0.0
+                master_df[c] = pd.to_numeric(master_df[c], errors='coerce').fillna(0.0)
+
             master_df['DateObj'] = pd.to_datetime(master_df['Date'], format='mixed', dayfirst=True, errors='coerce')
             master_df = master_df.dropna(subset=['DateObj']).copy()
             master_df['Year'] = master_df['DateObj'].dt.year.astype(str)
             master_df['Month'] = master_df['DateObj'].dt.strftime('%Y-%m')
             master_df['Day'] = master_df['DateObj'].dt.strftime('%d/%m/%Y')
             master_df['SKU'] = master_df['SKU'].astype(str)
-            master_df['Parent_SKU'] = master_df['Parent_SKU'].astype(str)
-            master_df['Product'] = master_df['Product'].astype(str)
-            master_df['Platform'] = master_df['Platform'].fillna('Shopee').astype(str)
-            master_df['Shop_Name'] = master_df['Shop_Name'].fillna('Main').astype(str)
+            master_df['Parent_SKU'] = master_df.get('Parent_SKU', master_df.get('Product Group', 'General')).astype(str)
+            master_df['Product'] = master_df.get('Product', master_df.get('Item Name', 'General')).astype(str)
+            master_df['Platform'] = master_df.get('Platform', pd.Series(['Shopee'] * len(master_df))).fillna('Shopee').astype(str)
+            master_df['Shop_Name'] = master_df.get('Shop_Name', pd.Series(['Main Shop'] * len(master_df))).fillna('Main Shop').astype(str)
 
         return master_df
 
@@ -435,11 +444,11 @@ if check_password():
     # ================= 9. KPI Scorecards =================
     st.markdown("---")
     kpi1, kpi2, kpi3, kpi4, kpi5, kpi6, kpi7 = st.columns(7)
-    rev = cross_df['Revenue'].sum()
-    vis = cross_df['Visitors'].sum()
-    buy = cross_df['Buyers'].sum()
-    unit = cross_df['Units_Sold'].sum()
-    orders = cross_df['Orders'].sum()
+    rev = cross_df['Revenue'].sum() if 'Revenue' in cross_df.columns else 0
+    vis = cross_df['Visitors'].sum() if 'Visitors' in cross_df.columns else 0
+    buy = cross_df['Buyers'].sum() if 'Buyers' in cross_df.columns else 0
+    unit = cross_df['Units_Sold'].sum() if 'Units_Sold' in cross_df.columns else 0
+    orders = cross_df['Orders'].sum() if 'Orders' in cross_df.columns else 0
     cr = (buy / vis) if vis > 0 else 0
     rev_per_buyer = (rev / buy) if buy > 0 else 0
     aov = (rev / orders) if orders > 0 else (rev / buy if buy > 0 else 0)
