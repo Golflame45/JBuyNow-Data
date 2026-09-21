@@ -1,10 +1,28 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import io
+import os
+import re
+from datetime import datetime
 
-st.set_page_config(page_title="Shopee Dashboard (Lazada Style)", layout="wide")
+# Google Drive API Libraries
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+    GOOGLE_API_AVAILABLE = True
+except ImportError:
+    GOOGLE_API_AVAILABLE = False
 
-# ================= 0. Simple Authentication =================
+st.set_page_config(page_title="Omnichannel E-commerce Dashboard", layout="wide")
+
+# ================= Google Drive Folder IDs =================
+INBOX_FOLDER_ID = "1UYXJ1cyBHs1LHndB_Os5Rl8men7_7PQ5"
+MASTER_FOLDER_ID = "1RNsLYo4TE_jEQOnMgVuKOW8RmFHiAjQf"
+ARCHIVE_FOLDER_ID = "1MrQq5V3CuRwrO1pp9ZDzdYdVMdizOPP7"
+
+# ================= 0. Authentication =================
 def check_password():
     def password_entered():
         if st.session_state["password"] == "1234":
@@ -26,76 +44,370 @@ def check_password():
         return True
 
 if check_password():
-    
-    @st.cache_data
-    def load_data():
-        df = pd.read_csv('Master_Shopee_Data.csv')
-        cols_to_clean = {
-            'Revenue': 'ยอดขาย (ที่มีการสั่งซื้อทั้งหมด) (THB)',
-            'Visitors': 'ผู้เข้าชมสินค้า',
-            'Buyers': 'ผู้ซื้อ (ที่มีการสั่งซื้อทั้งหมด)',
-            'Units_Sold': 'จำนวนที่ขายได้ (ที่มีการสั่งซื้อทั้งหมด)',
-            'Orders': 'ทั้งหมด',
-            'A2C': 'จำนวนที่ขายได้ (เพิ่มสินค้าในรถเข็น)'
+
+    # ================= 1. Google Drive Helper Functions =================
+    def get_drive_service():
+        if not GOOGLE_API_AVAILABLE:
+            return None
+        creds = None
+        import json
+
+        # Check Streamlit Cloud Secrets
+        if "gcp_service_account" in st.secrets:
+            raw_val = st.secrets["gcp_service_account"]
+            if isinstance(raw_val, str):
+                creds_dict = json.loads(raw_val)
+            else:
+                creds_dict = dict(raw_val)
+            creds = service_account.Credentials.from_service_account_info(
+                creds_dict, scopes=['https://www.googleapis.com/auth/drive']
+            )
+        elif "gcp_json" in st.secrets:
+            creds_dict = json.loads(st.secrets["gcp_json"])
+            creds = service_account.Credentials.from_service_account_info(
+                creds_dict, scopes=['https://www.googleapis.com/auth/drive']
+            )
+        # Check local JSON file if running locally
+        elif os.path.exists("service_account.json"):
+            creds = service_account.Credentials.from_service_account_file(
+                "service_account.json", scopes=['https://www.googleapis.com/auth/drive']
+            )
+        if creds:
+            return build('drive', 'v3', credentials=creds)
+        return None
+
+    def list_files_in_folder(service, folder_id):
+        query = f"'{folder_id}' in parents and trashed = false"
+        results = service.files().list(q=query, fields="files(id, name, mimeType)").execute()
+        return results.get('files', [])
+
+    def download_file_bytes(service, file_id):
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+        fh.seek(0)
+        return fh
+
+    def upload_file_bytes(service, folder_id, file_name, file_bytes, mime_type='text/csv'):
+        # Check if file already exists in folder
+        existing = service.files().list(
+            q=f"'{folder_id}' in parents and name = '{file_name}' and trashed = false",
+            fields="files(id)"
+        ).execute().get('files', [])
+        
+        media = MediaIoBaseUpload(file_bytes, mimetype=mime_type, resumable=True)
+        if existing:
+            file_id = existing[0]['id']
+            updated = service.files().update(fileId=file_id, media_body=media).execute()
+            return updated['id']
+        else:
+            file_metadata = {'name': file_name, 'parents': [folder_id]}
+            created = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+            return created['id']
+
+    def move_file_to_archive(service, file_id, current_parent_id, archive_parent_id):
+        service.files().update(
+            fileId=file_id,
+            addParents=archive_parent_id,
+            removeParents=current_parent_id,
+            fields='id, parents'
+        ).execute()
+
+    # ================= 2. Multi-Channel Data Normalization =================
+    def parse_raw_sales_file(file_bytes, file_name, folder_name=""):
+        # Determine format
+        if file_name.endswith('.csv'):
+            df = pd.read_csv(file_bytes)
+        else:
+            df = pd.read_excel(file_bytes)
+
+        # Detect Platform
+        name_check = (file_name + " " + folder_name).lower()
+        if "lazada" in name_check or "laz" in name_check:
+            platform = "Lazada"
+        else:
+            platform = "Shopee"
+
+        # Detect Shop Name from folder name or file name
+        shop_name = "General"
+        if folder_name:
+            shop_name = folder_name.replace("Lazada_", "").replace("Shopee_", "").replace("Lazada", "").replace("Shopee", "").strip(" _-")
+            if not shop_name:
+                shop_name = folder_name
+        elif "_" in file_name:
+            parts = file_name.split("_")
+            if len(parts) >= 2:
+                shop_name = parts[1]
+
+        # Extract Date
+        date_match = re.search(r'202\d{5}', file_name)
+        file_date_str = None
+        if date_match:
+            try:
+                d = datetime.strptime(date_match.group(0), '%Y%m%d')
+                file_date_str = d.strftime('%Y-%m-%d')
+            except:
+                pass
+
+        # Mapping for Shopee & Lazada columns
+        col_mappings = {
+            'Revenue': ['ยอดขาย (ที่มีการสั่งซื้อทั้งหมด) (THB)', 'ยอดขาย (THB)', 'LAZ Revenue', 'Revenue', 'ยอดขาย'],
+            'Visitors': ['ผู้เข้าชมสินค้า', 'การเข้าชมสินค้า', 'SKU_Visitors', 'Visitors'],
+            'Buyers': ['ผู้ซื้อ (ที่มีการสั่งซื้อทั้งหมด)', 'ผู้ซื้อ', 'Buyer', 'Buyers'],
+            'Units_Sold': ['จำนวนที่ขายได้ (ที่มีการสั่งซื้อทั้งหมด)', 'จำนวนที่ขายได้', 'UnitsSold', 'Units Sold', 'Units_Sold'],
+            'A2C': ['จำนวนที่ขายได้ (เพิ่มสินค้าในรถเข็น)', 'A2C Units', 'Add2CartUnits', 'A2C'],
+            'Orders': ['ทั้งหมด', 'Orders', 'Order No.'],
+            'SKU': ['SKU', 'Seller SKU', 'SKU Code', 'รหัสสินค้า'],
+            'Parent_SKU': ['Parent SKU', 'Product Group', 'กลุ่มสินค้า'],
+            'Product': ['ผลิตภัณฑ์', 'Item Name', 'Product Name', 'Product Group', 'ชื่อสินค้า'],
+            'Date': ['Date', 'OrderDate', 'Posting Date', 'วันที่']
         }
-        for en_col, th_col in cols_to_clean.items():
-            if th_col in df.columns:
-                df[en_col] = df[th_col].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
-        cr_col = 'อัตราการซื้อสินค้า (ทั้งหมด)'
-        if cr_col in df.columns:
-            df['CR'] = df[cr_col].astype(str).str.replace('%', '').str.replace('-', '0').astype(float) / 100.0
+
+        clean_df = pd.DataFrame()
+        for standard_col, candidate_cols in col_mappings.items():
+            matched = False
+            for cand in candidate_cols:
+                if cand in df.columns:
+                    clean_df[standard_col] = df[cand]
+                    matched = True
+                    break
+            if not matched:
+                clean_df[standard_col] = None
+
+        clean_df['Platform'] = platform
+        clean_df['Shop_Name'] = shop_name if shop_name else "Main Shop"
+
+        # Date handling
+        if file_date_str and clean_df['Date'].isna().all():
+            clean_df['Date'] = file_date_str
+        elif clean_df['Date'].isna().all():
+            clean_df['Date'] = datetime.today().strftime('%Y-%m-%d')
+
+        # Clean numeric columns
+        numeric_cols = ['Revenue', 'Visitors', 'Buyers', 'Units_Sold', 'A2C', 'Orders']
+        for nc in numeric_cols:
+            clean_df[nc] = (
+                clean_df[nc].astype(str)
+                .str.replace(',', '')
+                .str.replace('-', '0')
+                .str.replace('nan', '0')
+                .str.replace('None', '0')
+            )
+            clean_df[nc] = pd.to_numeric(clean_df[nc], errors='coerce').fillna(0)
+
+        clean_df['SKU'] = clean_df['SKU'].astype(str)
+        clean_df['Parent_SKU'] = clean_df['Parent_SKU'].astype(str)
+        clean_df['Product'] = clean_df['Product'].astype(str)
+        clean_df['DateObj'] = pd.to_datetime(clean_df['Date'], format='mixed', dayfirst=True, errors='coerce')
+        clean_df = clean_df.dropna(subset=['DateObj'])
+        clean_df['Date'] = clean_df['DateObj'].dt.strftime('%Y-%m-%d')
+
+        return clean_df
+
+    # ================= 3. Automated Ingestion Pipeline =================
+    def sync_google_drive_pipeline(service):
+        if not service:
+            return "ไม่สามารถเชื่อมต่อ Google Drive API ได้ (กรุณาเช็ค Secrets)", 0
+
+        # Step 1: Check existing Master file in 02_Master_Data
+        master_files = list_files_in_folder(service, MASTER_FOLDER_ID)
+        master_file_item = next((f for f in master_files if f['name'] == 'Master_Sales_Full.csv'), None)
+        
+        if master_file_item:
+            fh = download_file_bytes(service, master_file_item['id'])
+            master_df = pd.read_csv(fh)
+        else:
+            master_df = pd.DataFrame()
+
+        # Step 2: Scan 01_Drop_Inbox (both direct files and subfolders)
+        inbox_items = list_files_in_folder(service, INBOX_FOLDER_ID)
+        new_dfs = []
+        files_processed_count = 0
+
+        for item in inbox_items:
+            # Case A: Subfolder (e.g. Lazada_S.ELECTRIC, Shopee_Shop1)
+            if item['mimeType'] == 'application/vnd.google-apps.folder':
+                sub_files = list_files_in_folder(service, item['id'])
+                for sf in sub_files:
+                    if sf['name'].endswith(('.xlsx', '.xls', '.csv')):
+                        fb = download_file_bytes(service, sf['id'])
+                        df_parsed = parse_raw_sales_file(fb, sf['name'], folder_name=item['name'])
+                        new_dfs.append(df_parsed)
+                        move_file_to_archive(service, sf['id'], item['id'], ARCHIVE_FOLDER_ID)
+                        files_processed_count += 1
+            # Case B: Direct file in 01_Drop_Inbox
+            elif item['name'].endswith(('.xlsx', '.xls', '.csv')):
+                fb = download_file_bytes(service, item['id'])
+                df_parsed = parse_raw_sales_file(fb, item['name'])
+                new_dfs.append(df_parsed)
+                move_file_to_archive(service, item['id'], INBOX_FOLDER_ID, ARCHIVE_FOLDER_ID)
+                files_processed_count += 1
+
+        # Step 3: Append, Deduplicate, and Save back to 02_Master_Data
+        if new_dfs:
+            combined_new = pd.concat(new_dfs, ignore_index=True)
+            if not master_df.empty:
+                full_df = pd.concat([master_df, combined_new], ignore_index=True)
+            else:
+                full_df = combined_new
             
-        df['DateObj'] = pd.to_datetime(df['Date'], format='mixed', dayfirst=True, errors='coerce')
-        df = df.dropna(subset=['DateObj']).copy()
-        df['Year'] = df['DateObj'].dt.year.astype(str)
-        df['Month'] = df['DateObj'].dt.strftime('%Y-%m')
-        df['Day'] = df['DateObj'].dt.strftime('%d/%m/%Y')
-        df['SKU'] = df['SKU'].astype(str)
-        df['Parent_SKU'] = df['Parent SKU'].astype(str)
-        df['Product'] = df['ผลิตภัณฑ์'].astype(str)
-        return df
-    
-    base_df = load_data()
-    
-    # Custom CSS for banner and KPI borders (Dark Mode Compatible)
+            # Deduplicate by Platform, Shop_Name, Date, SKU
+            full_df = full_df.drop_duplicates(subset=['Platform', 'Shop_Name', 'Date', 'SKU'], keep='last')
+            
+            # Save back to Google Drive
+            csv_buf = io.BytesIO()
+            full_df.to_csv(csv_buf, index=False, encoding='utf-8-sig')
+            csv_buf.seek(0)
+            upload_file_bytes(service, MASTER_FOLDER_ID, 'Master_Sales_Full.csv', csv_buf, mime_type='text/csv')
+            master_df = full_df
+
+        return "ซิงก์สำเร็จ", files_processed_count
+
+    # ================= 4. Load Master & SKU Master Data =================
+    @st.cache_data(ttl=600)
+    def load_active_data():
+        service = get_drive_service()
+        master_df = pd.DataFrame()
+
+        if service:
+            master_files = list_files_in_folder(service, MASTER_FOLDER_ID)
+            # Find Master Sales
+            m_item = next((f for f in master_files if f['name'] == 'Master_Sales_Full.csv'), None)
+            if m_item:
+                fh = download_file_bytes(service, m_item['id'])
+                master_df = pd.read_csv(fh)
+            
+            # Find SKU Master if exists in 02_Master_Data
+            sku_item = next((f for f in master_files if 'sku' in f['name'].lower() and 'master' in f['name'].lower()), None)
+            if sku_item and not master_df.empty:
+                sku_bytes = download_file_bytes(service, sku_item['id'])
+                if sku_item['name'].endswith('.csv'):
+                    sku_master_df = pd.read_csv(sku_bytes)
+                else:
+                    sku_master_df = pd.read_excel(sku_bytes)
+                
+                # Normalize SKU column name in master
+                sku_col = next((c for c in sku_master_df.columns if c.lower() in ['sku', 'seller sku', 'รหัสสินค้า']), None)
+                if sku_col:
+                    sku_master_df['SKU'] = sku_master_df[sku_col].astype(str)
+                    master_df['SKU'] = master_df['SKU'].astype(str)
+                    # Merge ERP Catalog
+                    master_df = master_df.merge(sku_master_df, on='SKU', how='left', suffixes=('', '_ERP'))
+        else:
+            # Local fallback for offline testing
+            if os.path.exists('Master_Shopee_Data.csv'):
+                master_df = pd.read_csv('Master_Shopee_Data.csv')
+                # Minimal shopee column adaptation for local fallback
+                if 'ยอดขาย (ที่มีการสั่งซื้อทั้งหมด) (THB)' in master_df.columns:
+                    master_df['Revenue'] = master_df['ยอดขาย (ที่มีการสั่งซื้อทั้งหมด) (THB)'].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
+                    master_df['Visitors'] = master_df['ผู้เข้าชมสินค้า'].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
+                    master_df['Buyers'] = master_df['ผู้ซื้อ (ที่มีการสั่งซื้อทั้งหมด)'].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
+                    master_df['Units_Sold'] = master_df['จำนวนที่ขายได้ (ที่มีการสั่งซื้อทั้งหมด)'].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
+                    master_df['A2C'] = master_df['จำนวนที่ขายได้ (เพิ่มสินค้าในรถเข็น)'].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
+                    master_df['Product'] = master_df['ผลิตภัณฑ์'].astype(str)
+                    master_df['Parent_SKU'] = master_df['Parent SKU'].astype(str)
+                    master_df['Platform'] = 'Shopee'
+                    master_df['Shop_Name'] = 'Official Shop'
+
+        if not master_df.empty:
+            master_df['DateObj'] = pd.to_datetime(master_df['Date'], format='mixed', dayfirst=True, errors='coerce')
+            master_df = master_df.dropna(subset=['DateObj']).copy()
+            master_df['Year'] = master_df['DateObj'].dt.year.astype(str)
+            master_df['Month'] = master_df['DateObj'].dt.strftime('%Y-%m')
+            master_df['Day'] = master_df['DateObj'].dt.strftime('%d/%m/%Y')
+            master_df['SKU'] = master_df['SKU'].astype(str)
+            master_df['Parent_SKU'] = master_df['Parent_SKU'].astype(str)
+            master_df['Product'] = master_df['Product'].astype(str)
+            master_df['Platform'] = master_df['Platform'].fillna('Shopee').astype(str)
+            master_df['Shop_Name'] = master_df['Shop_Name'].fillna('Main').astype(str)
+
+        return master_df
+
+    # ================= 5. Sidebar Sync & Administration =================
+    with st.sidebar:
+        st.header("⚙️ ระบบท่อข้อมูลอัตโนมัติ")
+        st.write("**Google Drive Auto-Sync**")
+        if st.button("🔄 ซิงก์ข้อมูลจาก Google Drive"):
+            with st.spinner("กำลังตรวจสอบไฟล์ใหม่ใน 01_Drop_Inbox..."):
+                srv = get_drive_service()
+                status_msg, count = sync_google_drive_pipeline(srv)
+                st.cache_data.clear()
+                if count > 0:
+                    st.success(f"นำเข้าข้อมูลใหม่สำเร็จ {count} ไฟล์!")
+                else:
+                    st.info("ไม่มีไฟล์ใหม่ในห้อง 01_Drop_Inbox (ข้อมูลเป็นปัจจุบันแล้ว)")
+                st.rerun()
+
+    base_df = load_active_data()
+
+    # ================= 6. UI Banner & Top Filters =================
     st.markdown("""
         <style>
         .pbi-bar {
             background: linear-gradient(90deg, #FF007F 0%, #0000FF 100%);
-            color: white; padding: 10px;
-            font-size: 24px; font-weight: bold; text-align: left;
-            border-radius: 5px; margin-bottom: 20px;
+            color: white; padding: 12px 18px;
+            font-size: 22px; font-weight: bold; text-align: left;
+            border-radius: 6px; margin-bottom: 15px;
+            display: flex; justify-content: space-between; align-items: center;
         }
         [data-testid="stMetricValue"] { font-size: 24px !important; }
         [data-testid="stMetric"] {
             border: 1px solid var(--secondary-background-color); 
-            padding: 10px; border-radius: 5px;
+            padding: 10px; border-radius: 6px;
             box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
         }
         </style>
-        <div class="pbi-bar">SHOPEE PERFORMANCE DASHBOARD</div>
+        <div class="pbi-bar">
+            <span>OMNICHANNEL SALES DASHBOARD</span>
+            <span style="font-size: 14px; font-weight: normal; opacity: 0.9;">SHOPEE & LAZADA MULTI-SHOP</span>
+        </div>
     """, unsafe_allow_html=True)
+
+    # Empty State Handling (Day 0)
+    if base_df.empty:
+        st.info("👋 **ระบบพร้อมทำงาน 100% แล้วครับ!**\n\nขณะนี้ยังไม่มีข้อมูลในระบบ ให้ทีมงานนำไฟล์ยอดขายรายวันไปหยอดไว้ในห้อง **`01_Drop_Inbox`** บน Google Drive จากนั้นกดปุ่ม **'🔄 ซิงก์ข้อมูลจาก Google Drive'** ที่แถบเมนูด้านซ้ายเพื่อเริ่มการคำนวณวันแรกได้ทันทีครับ!")
+        st.stop()
+
+    # ================= 7. Global Filters =================
+    col_p1, col_p2, col_p3, col_p4 = st.columns([1, 1.5, 1, 2])
     
-    # ================= 1. Global Filters =================
-    col_f1, col_f2 = st.columns([1, 2])
-    with col_f1:
+    with col_p1:
+        platforms = ['ทั้งหมด (All)'] + sorted(base_df['Platform'].unique().tolist())
+        sel_platform = st.selectbox("ช่องทาง (Platform)", platforms)
+
+    with col_p2:
+        available_shops = base_df if sel_platform == 'ทั้งหมด (All)' else base_df[base_df['Platform'] == sel_platform]
+        shop_list = sorted(available_shops['Shop_Name'].unique().tolist())
+        sel_shops = st.multiselect("ร้านค้า (Shop)", shop_list, default=shop_list)
+
+    with col_p3:
         all_years = sorted(base_df['Year'].unique())
         selected_years = st.multiselect("ปี (Year)", all_years, default=all_years)
-    with col_f2:
+
+    with col_p4:
         all_parents = sorted(list(set([str(s) for s in base_df['Parent_SKU'].unique() if str(s) not in ['-', 'nan', 'NaN']])))
-        selected_parents = st.multiselect("กลุ่มสินค้า (Parent SKU / Category)", all_parents)
-    
+        selected_parents = st.multiselect("กลุ่มสินค้า (Category)", all_parents)
+
     filtered_df = base_df.copy()
-    if selected_years: filtered_df = filtered_df[filtered_df['Year'].isin(selected_years)]
-    if selected_parents: filtered_df = filtered_df[filtered_df['Parent_SKU'].isin(selected_parents)]
-    
-    # ================= 2. Base Aggregations (Static for row mapping) =================
-    monthly_base = filtered_df.groupby('Month').agg({'Revenue': 'sum'}).reset_index()
+    if sel_platform != 'ทั้งหมด (All)':
+        filtered_df = filtered_df[filtered_df['Platform'] == sel_platform]
+    if sel_shops:
+        filtered_df = filtered_df[filtered_df['Shop_Name'].isin(sel_shops)]
+    if selected_years:
+        filtered_df = filtered_df[filtered_df['Year'].isin(selected_years)]
+    if selected_parents:
+        filtered_df = filtered_df[filtered_df['Parent_SKU'].isin(selected_parents)]
+
+    # ================= 8. Base Tables for Fixed Row Mapping =================
+    monthly_base = filtered_df.groupby('Month').agg({'Revenue': 'sum'}).reset_index().sort_values('Month')
     prod_base = filtered_df.groupby('Product').agg({'Revenue': 'sum'}).reset_index().sort_values('Revenue', ascending=False)
     daily_base = filtered_df.groupby('Day').agg({'DateObj': 'first'}).reset_index().sort_values('DateObj')
     sku_base = filtered_df.groupby('SKU').agg({'Revenue': 'sum'}).reset_index().sort_values('Revenue', ascending=False)
-    
-    # ================= 3. Get Selections =================
+
+    # Cross-Filtering Extraction
     def get_selected_rows(key):
         val = st.session_state.get(key)
         if not val: return []
@@ -108,20 +420,20 @@ if check_password():
     sel_prod_idx = get_selected_rows('tb_prod')
     sel_day_idx = get_selected_rows('tb_day')
     sel_sku_idx = get_selected_rows('tb_sku')
-    
+
     selected_months = monthly_base.iloc[sel_month_idx]['Month'].tolist() if sel_month_idx else []
     selected_prods = prod_base.iloc[sel_prod_idx]['Product'].tolist() if sel_prod_idx else []
     selected_days = daily_base.iloc[sel_day_idx]['Day'].tolist() if sel_day_idx else []
     selected_skus = sku_base.iloc[sel_sku_idx]['SKU'].tolist() if sel_sku_idx else []
-    
-    # ================= 4. Build Cross-Filtered DataFrame =================
+
     cross_df = filtered_df.copy()
     if selected_months: cross_df = cross_df[cross_df['Month'].isin(selected_months)]
     if selected_prods: cross_df = cross_df[cross_df['Product'].isin(selected_prods)]
     if selected_days: cross_df = cross_df[cross_df['Day'].isin(selected_days)]
     if selected_skus: cross_df = cross_df[cross_df['SKU'].isin(selected_skus)]
-    
-    # ================= 5. KPI Scorecards =================
+
+    # ================= 9. KPI Scorecards =================
+    st.markdown("---")
     kpi1, kpi2, kpi3, kpi4, kpi5, kpi6, kpi7 = st.columns(7)
     rev = cross_df['Revenue'].sum()
     vis = cross_df['Visitors'].sum()
@@ -130,8 +442,8 @@ if check_password():
     orders = cross_df['Orders'].sum()
     cr = (buy / vis) if vis > 0 else 0
     rev_per_buyer = (rev / buy) if buy > 0 else 0
-    aov = (rev / orders) if orders > 0 else 0
-    
+    aov = (rev / orders) if orders > 0 else (rev / buy if buy > 0 else 0)
+
     kpi1.metric("Revenue (ยอดขาย)", f"฿{rev:,.0f}")
     kpi2.metric("SKU Visitors", f"{vis:,.0f}")
     kpi3.metric("SKU CR%", f"{cr*100:,.2f}%")
@@ -139,10 +451,10 @@ if check_password():
     kpi5.metric("AOV", f"฿{aov:,.0f}")
     kpi6.metric("Buyers (ผู้ซื้อ)", f"{buy:,.0f}")
     kpi7.metric("Units Sold", f"{unit:,.0f}")
-    
+
     st.markdown("---")
-    
-    # ================= 6. Create Display Tables =================
+
+    # ================= 10. Display Tables =================
     monthly_cross = cross_df.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index()
     disp_monthly = monthly_base[['Month']].merge(monthly_cross, on='Month', how='left').fillna(0)
     disp_monthly['% Rev'] = (disp_monthly['Revenue'] / disp_monthly['Revenue'].sum() * 100).fillna(0)
@@ -159,8 +471,7 @@ if check_password():
     disp_sku = sku_base[['SKU']].merge(sku_cross, on='SKU', how='left').fillna(0)
     disp_sku['Avg CR'] = (disp_sku['Buyers'] / disp_sku['Visitors'] * 100).fillna(0)
     disp_sku['Avg Price'] = (disp_sku['Revenue'] / disp_sku['Units_Sold']).fillna(0)
-    
-    # ================= 7. Render UI =================
+
     col_config = {
         "Revenue": st.column_config.NumberColumn("Revenue", format="฿%.2f"),
         "Avg CR": st.column_config.NumberColumn("Avg CR", format="%.2f %%"),
@@ -168,6 +479,7 @@ if check_password():
         "% Rev": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100)
     }
 
+    # Middle Row
     col_m1, col_m2, col_m3 = st.columns([1.2, 1.8, 2.5])
     with col_m1:
         st.write("**Order Month**")
@@ -178,7 +490,7 @@ if check_password():
             column_config=col_config
         )
     with col_m2:
-        st.write("**Shopee Revenue by FGMONTHYEAR**")
+        st.write("**Revenue Trend by FGMONTHYEAR**")
         if not disp_monthly.empty:
             fig = px.line(disp_monthly, x='Month', y='Revenue', markers=True, text='Revenue', color_discrete_sequence=['#00d4ff'])
             fig.update_traces(textposition="top center", texttemplate='%{text:.2s}')
@@ -198,6 +510,7 @@ if check_password():
         )
 
     st.markdown("---")
+    # Bottom Row
     col_d1, col_d2 = st.columns([1.5, 2.5])
     with col_d1:
         st.write("**Order Date (รายวัน)**")
