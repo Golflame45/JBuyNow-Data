@@ -412,9 +412,16 @@ if check_password():
 
     # ================= 8. Base Tables for Fixed Row Mapping =================
     monthly_base = filtered_df.groupby('Month').agg({'Revenue': 'sum'}).reset_index().sort_values('Month')
-    prod_base = filtered_df.groupby('Product').agg({'Revenue': 'sum'}).reset_index().sort_values('Revenue', ascending=False)
-    daily_base = filtered_df.groupby('Day').agg({'DateObj': 'first'}).reset_index().sort_values('DateObj')
-    sku_base = filtered_df.groupby('SKU').agg({'Revenue': 'sum'}).reset_index().sort_values('Revenue', ascending=False)
+    # ================= 8. Base Tables for Fixed Row Mapping =================
+    monthly_base = filtered_df.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index().sort_values('Month')
+    prod_base = filtered_df.groupby('Product').agg({'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'}).reset_index().sort_values('Revenue', ascending=False)
+    prod_base['Avg CR'] = (prod_base['Buyers'] / prod_base['Visitors'] * 100).fillna(0)
+    prod_base['Avg Price'] = (prod_base['Revenue'] / prod_base['Units_Sold']).fillna(0)
+
+    daily_base = filtered_df.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index().sort_values('DateObj')
+    sku_base = filtered_df.groupby('SKU').agg({'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'}).reset_index().sort_values('Revenue', ascending=False)
+    sku_base['Avg CR'] = (sku_base['Buyers'] / sku_base['Visitors'] * 100).fillna(0)
+    sku_base['Avg Price'] = (sku_base['Revenue'] / sku_base['Units_Sold']).fillna(0)
 
     # Cross-Filtering Extraction
     def get_selected_rows(key):
@@ -425,15 +432,20 @@ if check_password():
         try: return val['selection']['rows']
         except: return []
 
-    sel_month_idx = get_selected_rows('tb_month')
-    sel_prod_idx = get_selected_rows('tb_prod')
-    sel_day_idx = get_selected_rows('tb_day')
-    sel_sku_idx = get_selected_rows('tb_sku')
+    def get_selected_items(key, id_col, fallback_df):
+        sel_idx = get_selected_rows(key)
+        if not sel_idx: return []
+        stored_ids = st.session_state.get(f"{key}_rendered_ids", [])
+        if stored_ids:
+            return [stored_ids[i] for i in sel_idx if i < len(stored_ids)]
+        elif id_col in fallback_df.columns:
+            return [fallback_df.iloc[i][id_col] for i in sel_idx if i < len(fallback_df)]
+        return []
 
-    selected_months = monthly_base.iloc[sel_month_idx]['Month'].tolist() if sel_month_idx else []
-    selected_prods = prod_base.iloc[sel_prod_idx]['Product'].tolist() if sel_prod_idx else []
-    selected_days = daily_base.iloc[sel_day_idx]['Day'].tolist() if sel_day_idx else []
-    selected_skus = sku_base.iloc[sel_sku_idx]['SKU'].tolist() if sel_sku_idx else []
+    selected_months = get_selected_items('tb_month', 'Month', monthly_base)
+    selected_prods = get_selected_items('tb_prod', 'Product', prod_base)
+    selected_days = get_selected_items('tb_day', 'Day', daily_base)
+    selected_skus = get_selected_items('tb_sku', 'SKU', sku_base)
 
     cross_df = filtered_df.copy()
     if selected_months: cross_df = cross_df[cross_df['Month'].isin(selected_months)]
@@ -464,22 +476,47 @@ if check_password():
     st.markdown("---")
 
     # ================= 10. Display Tables =================
-    monthly_cross = cross_df.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index()
-    disp_monthly = monthly_base[['Month']].merge(monthly_cross, on='Month', how='left').fillna(0)
-    disp_monthly['% Rev'] = (disp_monthly['Revenue'] / disp_monthly['Revenue'].sum() * 100).fillna(0)
+    # Section ที่ถูกคลิก จะแสดงข้อมูลเต็มไม่กลายเป็น 0
+    # Section อื่นๆ ที่ไม่ได้ถูกคลิก แถวที่ไม่เกี่ยวข้องจะ "หายไปเลย" (ไม่เป็น 0)
+    
+    # 1. Order Month
+    if selected_months:
+        disp_monthly = monthly_base.copy()
+    else:
+        disp_monthly = cross_df.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index()
+        disp_monthly = disp_monthly[disp_monthly['Revenue'] > 0].sort_values('Month')
+    disp_monthly['% Rev'] = (disp_monthly['Revenue'] / disp_monthly['Revenue'].sum() * 100).fillna(0) if disp_monthly['Revenue'].sum() > 0 else 0
+    st.session_state['tb_month_rendered_ids'] = disp_monthly['Month'].tolist()
 
-    prod_cross = cross_df.groupby('Product').agg({'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'}).reset_index()
-    disp_prod = prod_base[['Product']].merge(prod_cross, on='Product', how='left').fillna(0)
-    disp_prod['Avg CR'] = (disp_prod['Buyers'] / disp_prod['Visitors'] * 100).fillna(0)
-    disp_prod['Avg Price'] = (disp_prod['Revenue'] / disp_prod['Units_Sold']).fillna(0)
+    # 2. Product Group
+    if selected_prods:
+        disp_prod = prod_base.copy()
+    else:
+        disp_prod = cross_df.groupby('Product').agg({'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'}).reset_index()
+        disp_prod = disp_prod[disp_prod['Revenue'] > 0]
+        disp_prod['Avg CR'] = (disp_prod['Buyers'] / disp_prod['Visitors'] * 100).fillna(0)
+        disp_prod['Avg Price'] = (disp_prod['Revenue'] / disp_prod['Units_Sold']).fillna(0)
+        disp_prod = disp_prod.sort_values('Revenue', ascending=False)
+    st.session_state['tb_prod_rendered_ids'] = disp_prod['Product'].tolist()
 
-    daily_cross = cross_df.groupby('Day').agg({'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index()
-    disp_daily = daily_base[['Day']].merge(daily_cross, on='Day', how='left').fillna(0)
+    # 3. Order Date
+    if selected_days:
+        disp_daily = daily_base.copy()
+    else:
+        disp_daily = cross_df.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index()
+        disp_daily = disp_daily[disp_daily['Revenue'] > 0].sort_values('DateObj')
+    st.session_state['tb_day_rendered_ids'] = disp_daily['Day'].tolist()
 
-    sku_cross = cross_df.groupby('SKU').agg({'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'}).reset_index()
-    disp_sku = sku_base[['SKU']].merge(sku_cross, on='SKU', how='left').fillna(0)
-    disp_sku['Avg CR'] = (disp_sku['Buyers'] / disp_sku['Visitors'] * 100).fillna(0)
-    disp_sku['Avg Price'] = (disp_sku['Revenue'] / disp_sku['Units_Sold']).fillna(0)
+    # 4. SKU Code
+    if selected_skus:
+        disp_sku = sku_base.copy()
+    else:
+        disp_sku = cross_df.groupby('SKU').agg({'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'}).reset_index()
+        disp_sku = disp_sku[disp_sku['Revenue'] > 0]
+        disp_sku['Avg CR'] = (disp_sku['Buyers'] / disp_sku['Visitors'] * 100).fillna(0)
+        disp_sku['Avg Price'] = (disp_sku['Revenue'] / disp_sku['Units_Sold']).fillna(0)
+        disp_sku = disp_sku.sort_values('Revenue', ascending=False)
+    st.session_state['tb_sku_rendered_ids'] = disp_sku['SKU'].tolist()
 
     col_config = {
         "Revenue": st.column_config.NumberColumn("Revenue", format="฿%.2f"),
@@ -500,8 +537,9 @@ if check_password():
         )
     with col_m2:
         st.write("**Revenue Trend by FGMONTHYEAR**")
-        if not disp_monthly.empty:
-            fig = px.line(disp_monthly, x='Month', y='Revenue', markers=True, text='Revenue', color_discrete_sequence=['#00d4ff'])
+        chart_df = cross_df.groupby('Month').agg({'Revenue': 'sum'}).reset_index().sort_values('Month')
+        if not chart_df.empty:
+            fig = px.line(chart_df, x='Month', y='Revenue', markers=True, text='Revenue', color_discrete_sequence=['#00d4ff'])
             fig.update_traces(textposition="top center", texttemplate='%{text:.2s}')
             fig.update_layout(
                 margin=dict(l=0, r=0, t=10, b=0), height=300, 
