@@ -308,12 +308,15 @@ if check_password():
                     stock_df = pd.read_excel(stock_bytes)
                 
                 # Normalize SKU (No.) and Stock (Inventory available) columns
-                sku_col = next((c for c in stock_df.columns if c.strip().lower() in ['no.', 'no', 'item no.', 'sku']), None)
-                stock_col = next((c for c in stock_df.columns if 'available' in c.strip().lower() or 'inventory' in c.strip().lower() or 'stock' in c.strip().lower() or 'qty' in c.strip().lower()), None)
+                sku_col = next((c for c in stock_df.columns if str(c).strip().lower() in ['no.', 'no', 'item no.', 'sku', 'seller sku', 'รหัสสินค้า']), None)
+                stock_col = next((c for c in stock_df.columns if any(k in str(c).strip().lower() for k in ['available', 'inventory', 'stock', 'on hand', 'qty', 'สต๊อก', 'พร้อมขาย'])), None)
                 
                 if sku_col and stock_col:
                     stock_df['SKU'] = stock_df[sku_col].astype(str).str.strip()
-                    stock_df['Stock_Available'] = pd.to_numeric(stock_df[stock_col], errors='coerce').fillna(0)
+                    stock_df['Stock_Available'] = pd.to_numeric(
+                        stock_df[stock_col].astype(str).str.replace(',', '').str.replace('-', '0'), 
+                        errors='coerce'
+                    ).fillna(0)
                     stock_summary = stock_df.groupby('SKU')['Stock_Available'].sum().reset_index()
                     master_df = master_df.merge(stock_summary, on='SKU', how='left')
                     master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0)
@@ -332,6 +335,31 @@ if check_password():
                     master_df['Parent_SKU'] = master_df['Parent SKU'].astype(str)
                     master_df['Platform'] = 'Shopee'
                     master_df['Shop_Name'] = 'Official Shop'
+
+        # Fallback to local stock file if Stock_Available is missing or all 0
+        if not master_df.empty and ('Stock_Available' not in master_df.columns or master_df['Stock_Available'].sum() == 0):
+            import os
+            for p in ['.', '..']:
+                if os.path.exists(p):
+                    for fn in sorted(os.listdir(p), reverse=True):
+                        if 'stock' in fn.lower() and fn.endswith(('.xlsx', '.xls', '.csv')):
+                            try:
+                                s_df = pd.read_csv(os.path.join(p, fn)) if fn.endswith('.csv') else pd.read_excel(os.path.join(p, fn))
+                                sku_c = next((c for c in s_df.columns if str(c).strip().lower() in ['no.', 'no', 'item no.', 'sku', 'seller sku', 'รหัสสินค้า']), None)
+                                stk_c = next((c for c in s_df.columns if any(k in str(c).strip().lower() for k in ['available', 'inventory', 'stock', 'on hand', 'qty', 'สต๊อก', 'พร้อมขาย'])), None)
+                                if sku_c and stk_c:
+                                    s_df['SKU'] = s_df[sku_c].astype(str).str.strip()
+                                    s_df['Stock_Available'] = pd.to_numeric(s_df[stk_c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
+                                    s_sum = s_df.groupby('SKU')['Stock_Available'].sum().reset_index()
+                                    master_df['SKU'] = master_df['SKU'].astype(str).str.strip()
+                                    if 'Stock_Available' in master_df.columns:
+                                        master_df = master_df.drop(columns=['Stock_Available'])
+                                    master_df = master_df.merge(s_sum, on='SKU', how='left')
+                                    master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0.0)
+                                    break
+                            except: pass
+                    if 'Stock_Available' in master_df.columns and master_df['Stock_Available'].sum() > 0:
+                        break
 
         if not master_df.empty:
             # Guarantee all numeric columns exist
