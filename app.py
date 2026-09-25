@@ -296,6 +296,27 @@ if check_password():
                     master_df['SKU'] = master_df['SKU'].astype(str)
                     # Merge ERP Catalog
                     master_df = master_df.merge(sku_master_df, on='SKU', how='left', suffixes=('', '_ERP'))
+
+            # Find Stock File if exists in 02_Master_Data (e.g. Stock as of 25.09)
+            stock_item = next((f for f in sorted(master_files, key=lambda x: x.get('name', ''), reverse=True) 
+                               if 'stock' in f['name'].lower() or 'inventory' in f['name'].lower()), None)
+            if stock_item and not master_df.empty:
+                stock_bytes = download_file_bytes(service, stock_item['id'])
+                if stock_item['name'].endswith('.csv'):
+                    stock_df = pd.read_csv(stock_bytes)
+                else:
+                    stock_df = pd.read_excel(stock_bytes)
+                
+                # Normalize SKU (No.) and Stock (Inventory available) columns
+                sku_col = next((c for c in stock_df.columns if c.strip().lower() in ['no.', 'no', 'item no.', 'sku']), None)
+                stock_col = next((c for c in stock_df.columns if 'available' in c.strip().lower() or 'inventory' in c.strip().lower() or 'stock' in c.strip().lower() or 'qty' in c.strip().lower()), None)
+                
+                if sku_col and stock_col:
+                    stock_df['SKU'] = stock_df[sku_col].astype(str).str.strip()
+                    stock_df['Stock_Available'] = pd.to_numeric(stock_df[stock_col], errors='coerce').fillna(0)
+                    stock_summary = stock_df.groupby('SKU')['Stock_Available'].sum().reset_index()
+                    master_df = master_df.merge(stock_summary, on='SKU', how='left')
+                    master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0)
         else:
             # Local fallback for offline testing
             if os.path.exists('Master_Shopee_Data.csv'):
@@ -324,6 +345,9 @@ if check_password():
 
             master_df['DateObj'] = pd.to_datetime(master_df['Date'], format='mixed', dayfirst=True, errors='coerce')
             master_df = master_df.dropna(subset=['DateObj']).copy()
+            if 'Stock_Available' not in master_df.columns:
+                master_df['Stock_Available'] = 0.0
+            master_df['Stock_Available'] = pd.to_numeric(master_df['Stock_Available'], errors='coerce').fillna(0.0)
             master_df['Year'] = master_df['DateObj'].dt.year.astype(str)
             master_df['Month'] = master_df['DateObj'].dt.strftime('%Y-%m')
             master_df['Day'] = master_df['DateObj'].dt.strftime('%d/%m/%Y')
@@ -419,7 +443,10 @@ if check_password():
     prod_base['Avg Price'] = (prod_base['Revenue'] / prod_base['Units_Sold']).fillna(0)
 
     daily_base = filtered_df.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index().sort_values('DateObj')
-    sku_base = filtered_df.groupby('SKU').agg({'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'}).reset_index().sort_values('Revenue', ascending=False)
+    sku_base = filtered_df.groupby('SKU').agg({
+        'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum',
+        'Stock_Available': 'first'
+    }).reset_index().sort_values('Revenue', ascending=False)
     sku_base['Avg CR'] = (sku_base['Buyers'] / sku_base['Visitors'] * 100).fillna(0)
     sku_base['Avg Price'] = (sku_base['Revenue'] / sku_base['Units_Sold']).fillna(0)
 
@@ -511,7 +538,10 @@ if check_password():
     if selected_skus:
         disp_sku = sku_base.copy()
     else:
-        disp_sku = cross_df.groupby('SKU').agg({'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'}).reset_index()
+        disp_sku = cross_df.groupby('SKU').agg({
+            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum',
+            'Stock_Available': 'first'
+        }).reset_index()
         disp_sku = disp_sku[disp_sku['Revenue'] > 0]
         disp_sku['Avg CR'] = (disp_sku['Buyers'] / disp_sku['Visitors'] * 100).fillna(0)
         disp_sku['Avg Price'] = (disp_sku['Revenue'] / disp_sku['Units_Sold']).fillna(0)
@@ -522,7 +552,8 @@ if check_password():
         "Revenue": st.column_config.NumberColumn("Revenue", format="฿%.2f"),
         "Avg CR": st.column_config.NumberColumn("Avg CR", format="%.2f %%"),
         "Avg Price": st.column_config.NumberColumn("Avg Price", format="฿%.2f"),
-        "% Rev": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100)
+        "% Rev": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100),
+        "Stock_Available": st.column_config.NumberColumn("Stock (พร้อมขาย)", format="%d ชิ้น")
     }
 
     # Middle Row
@@ -570,7 +601,7 @@ if check_password():
     with col_d2:
         st.write("**SKU Code (รายสินค้า)**")
         st.dataframe(
-            disp_sku[['SKU', 'Revenue', 'A2C', 'Visitors', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold']], 
+            disp_sku[['SKU', 'Revenue', 'Stock_Available', 'A2C', 'Visitors', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold']], 
             hide_index=True, use_container_width=True,
             on_select="rerun", selection_mode="multi-row", key="tb_sku",
             column_config=col_config
