@@ -121,18 +121,24 @@ if check_password():
         return files
 
     def extract_date_from_name_or_content(file_name, raw_df=None):
-        # Pattern 1: 25Sep2026 or 25-Sep-2026
-        m1 = re.search(r'(\d{1,2})\s*[-_]?\s*([A-Za-z]{3})\s*[-_]?\s*(202\d)', file_name)
+        # Pattern 1: 25Sep2026 or 25-Sep-2026 or 25_Sep_2026
+        m1 = re.search(r'(\d{1,2})\s*[-_.]?\s*([A-Za-z]{3})\s*[-_.]?\s*(202\d)', file_name)
         if m1:
             d, m, y = m1.groups()
             try:
                 return datetime.strptime(f"{d}{m}{y}", "%d%b%Y").strftime("%Y-%m-%d")
             except: pass
 
-        # Pattern 2: 20260925
-        m2 = re.search(r'(202\d)(\d{2})(\d{2})', file_name)
+        # Pattern 2: 20260925 or 2026-09-25 or 2026_09_25
+        m2 = re.search(r'(202\d)[-_.]?(\d{2})[-_.]?(\d{2})', file_name)
         if m2:
             return f"{m2.group(1)}-{m2.group(2)}-{m2.group(3)}"
+
+        # Pattern 2b: 25-09-2026 or 25.09.2026 or 25_09_2026
+        m2b = re.search(r'(\d{1,2})[-_.](\d{2})[-_.](202\d)', file_name)
+        if m2b:
+            d, m, y = m2b.groups()
+            return f"{y}-{int(m):02d}-{int(d):02d}"
 
         # Pattern 3: Search header content for Date Range
         if raw_df is not None:
@@ -234,7 +240,11 @@ if check_password():
         clean_df['Parent_SKU'] = clean_df['Parent_SKU'].astype(str).str.strip()
         clean_df['Product'] = clean_df['Product'].astype(str).str.strip()
         
-        clean_df['DateObj'] = pd.to_datetime(clean_df['Date'], errors='coerce')
+        d_parsed = pd.to_datetime(clean_df['Date'], format='%Y-%m-%d', errors='coerce')
+        missing_d = d_parsed.isna()
+        if missing_d.any():
+            d_parsed.loc[missing_d] = pd.to_datetime(clean_df['Date'][missing_d], format='mixed', dayfirst=True, errors='coerce')
+        clean_df['DateObj'] = d_parsed
         clean_df = clean_df.dropna(subset=['DateObj']).copy()
         clean_df['Date'] = clean_df['DateObj'].dt.strftime('%Y-%m-%d')
         clean_df = clean_df.drop(columns=['DateObj'])
@@ -355,60 +365,70 @@ if check_password():
             # Find SKU Master if exists in 02_Master_Data
             sku_item = next((f for f in master_files if 'sku' in f['name'].lower() and 'master' in f['name'].lower()), None)
             if sku_item and not master_df.empty:
-                sku_bytes = download_file_bytes(service, sku_item['id'])
-                if sku_item['name'].endswith('.csv'):
-                    sku_master_df = pd.read_csv(sku_bytes)
-                else:
-                    sku_master_df = pd.read_excel(sku_bytes)
-                
-                # Normalize SKU column name in master
-                sku_col = next((c for c in sku_master_df.columns if str(c).strip().lower() in ['no.', 'no', 'item no.', 'sku', 'seller sku', 'รหัสสินค้า']), None)
-                if sku_col:
-                    sku_master_df['SKU'] = sku_master_df[sku_col].astype(str).str.strip()
-                    master_df['SKU'] = master_df['SKU'].astype(str).str.strip()
-                    # Merge ERP Catalog
-                    master_df = master_df.merge(sku_master_df, on='SKU', how='left', suffixes=('', '_ERP'))
+                try:
+                    sku_bytes = download_file_bytes(service, sku_item['id'])
+                    sku_master_df = pd.read_csv(sku_bytes) if sku_item['name'].endswith('.csv') else pd.read_excel(sku_bytes)
+                    sku_col = next((c for c in sku_master_df.columns if str(c).strip().lower() in ['no.', 'no', 'item no.', 'sku', 'seller sku', 'รหัสสินค้า']), None)
+                    cat_col = next((c for c in sku_master_df.columns if str(c).strip().lower() in ['category description', 'cate desc', 'category_desc', 'หมวดหมู่สินค้า', 'หมวดหมู่']), None)
+                    if sku_col and cat_col:
+                        sku_master_df['SKU'] = sku_master_df[sku_col].astype(str).str.strip()
+                        sku_master_df['Category_Desc'] = sku_master_df[cat_col].astype(str).str.strip()
+                        sku_map = sku_master_df[['SKU', 'Category_Desc']].drop_duplicates(subset=['SKU'])
+                        master_df['SKU'] = master_df['SKU'].astype(str).str.strip()
+                        master_df = master_df.merge(sku_map, on='SKU', how='left')
+                except Exception:
+                    pass
 
             # Find Stock File if exists in 02_Master_Data (e.g. Stock as of 25.09)
             stock_item = next((f for f in sorted(master_files, key=lambda x: x.get('name', ''), reverse=True) 
                                if 'stock' in f['name'].lower() or 'inventory' in f['name'].lower()), None)
             if stock_item and not master_df.empty:
-                stock_bytes = download_file_bytes(service, stock_item['id'])
-                if stock_item['name'].endswith('.csv'):
-                    stock_df = pd.read_csv(stock_bytes)
-                else:
-                    stock_df = pd.read_excel(stock_bytes)
-                
-                # Normalize SKU (No.) and Stock (Inventory available) columns
-                sku_col = next((c for c in stock_df.columns if str(c).strip().lower() in ['no.', 'no', 'item no.', 'sku', 'seller sku', 'รหัสสินค้า']), None)
-                stock_col = next((c for c in stock_df.columns if any(k in str(c).strip().lower() for k in ['available', 'inventory', 'stock', 'on hand', 'qty', 'สต๊อก', 'พร้อมขาย'])), None)
-                
-                if sku_col and stock_col:
-                    stock_df['SKU'] = stock_df[sku_col].astype(str).str.strip()
-                    stock_df['Stock_Available'] = pd.to_numeric(
-                        stock_df[stock_col].astype(str).str.replace(',', '').str.replace('-', '0'), 
-                        errors='coerce'
-                    ).fillna(0)
-                    stock_summary = stock_df.groupby('SKU')['Stock_Available'].sum().reset_index()
-                    master_df = master_df.merge(stock_summary, on='SKU', how='left')
-                    master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0)
+                try:
+                    stock_bytes = download_file_bytes(service, stock_item['id'])
+                    stock_df = pd.read_csv(stock_bytes) if stock_item['name'].endswith('.csv') else pd.read_excel(stock_bytes)
+                    
+                    # Normalize SKU (No.) and Stock (Inventory available) columns
+                    sku_col = next((c for c in stock_df.columns if str(c).strip().lower() in ['no.', 'no', 'item no.', 'sku', 'seller sku', 'รหัสสินค้า']), None)
+                    stock_col = next((c for c in stock_df.columns if any(k in str(c).strip().lower() for k in ['available', 'inventory', 'stock', 'on hand', 'qty', 'สต๊อก', 'พร้อมขาย'])), None)
+                    
+                    if sku_col and stock_col:
+                        stock_df['SKU'] = stock_df[sku_col].astype(str).str.strip()
+                        stock_df['Stock_Available'] = pd.to_numeric(
+                            stock_df[stock_col].astype(str).str.replace(',', '').str.replace('-', '0'), 
+                            errors='coerce'
+                        ).fillna(0)
+                        stock_summary = stock_df.groupby('SKU')['Stock_Available'].sum().reset_index()
+                        master_df = master_df.merge(stock_summary, on='SKU', how='left')
+                        master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0)
+                except Exception:
+                    pass
         else:
-            # Local fallback for offline testing
+            # Local fallback for offline testing (Master_Sales_Full only)
             if os.path.exists('Master_Sales_Full.csv'):
                 master_df = pd.read_csv('Master_Sales_Full.csv')
-            elif os.path.exists('Master_Shopee_Data.csv'):
-                master_df = pd.read_csv('Master_Shopee_Data.csv')
-                # Minimal shopee column adaptation for local fallback
-                if 'ยอดขาย (ที่มีการสั่งซื้อทั้งหมด) (THB)' in master_df.columns:
-                    master_df['Revenue'] = master_df['ยอดขาย (ที่มีการสั่งซื้อทั้งหมด) (THB)'].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
-                    master_df['Visitors'] = master_df['ผู้เข้าชมสินค้า'].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
-                    master_df['Buyers'] = master_df['ผู้ซื้อ (ที่มีการสั่งซื้อทั้งหมด)'].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
-                    master_df['Units_Sold'] = master_df['จำนวนที่ขายได้ (ที่มีการสั่งซื้อทั้งหมด)'].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
-                    master_df['A2C'] = master_df['จำนวนที่ขายได้ (เพิ่มสินค้าในรถเข็น)'].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
-                    master_df['Product'] = master_df['ผลิตภัณฑ์'].astype(str)
-                    master_df['Parent_SKU'] = master_df['Parent SKU'].astype(str)
-                    master_df['Platform'] = 'Shopee'
-                    master_df['Shop_Name'] = 'Official Shop'
+
+        # Fallback to local SKU Master file if Category_Desc is missing
+        if not master_df.empty and ('Category_Desc' not in master_df.columns or master_df['Category_Desc'].isna().all()):
+            for p in ['.', '..']:
+                if os.path.exists(p):
+                    for fn in sorted(os.listdir(p), reverse=True):
+                        if 'sku' in fn.lower() and fn.endswith(('.xlsx', '.xls', '.csv')):
+                            try:
+                                s_sku_df = pd.read_csv(os.path.join(p, fn)) if fn.endswith('.csv') else pd.read_excel(os.path.join(p, fn))
+                                sku_c = next((c for c in s_sku_df.columns if str(c).strip().lower() in ['no.', 'no', 'item no.', 'sku', 'seller sku', 'รหัสสินค้า']), None)
+                                cat_c = next((c for c in s_sku_df.columns if str(c).strip().lower() in ['category description', 'cate desc', 'category_desc', 'หมวดหมู่สินค้า', 'หมวดหมู่']), None)
+                                if sku_c and cat_c:
+                                    s_sku_df['SKU'] = s_sku_df[sku_c].astype(str).str.strip()
+                                    s_sku_df['Category_Desc'] = s_sku_df[cat_c].astype(str).str.strip()
+                                    sku_map = s_sku_df[['SKU', 'Category_Desc']].drop_duplicates(subset=['SKU'])
+                                    master_df['SKU'] = master_df['SKU'].astype(str).str.strip()
+                                    if 'Category_Desc' in master_df.columns:
+                                        master_df = master_df.drop(columns=['Category_Desc'])
+                                    master_df = master_df.merge(sku_map, on='SKU', how='left')
+                                    break
+                            except: pass
+                    if 'Category_Desc' in master_df.columns and not master_df['Category_Desc'].isna().all():
+                        break
 
         # Fallback to local stock file if Stock_Available is missing or all 0
         if not master_df.empty and ('Stock_Available' not in master_df.columns or master_df['Stock_Available'].sum() == 0):
@@ -444,8 +464,20 @@ if check_password():
                         master_df[c] = 0.0
                 master_df[c] = pd.to_numeric(master_df[c], errors='coerce').fillna(0.0)
 
-            master_df['DateObj'] = pd.to_datetime(master_df['Date'], format='mixed', dayfirst=True, errors='coerce')
+            # Smart parsing: YYYY-MM-DD first (standard), then dayfirst=True fallback for DD/MM/YYYY
+            def parse_date_series(s):
+                res = pd.to_datetime(s, format='%Y-%m-%d', errors='coerce')
+                missing = res.isna()
+                if missing.any():
+                    res.loc[missing] = pd.to_datetime(s[missing], format='mixed', dayfirst=True, errors='coerce')
+                return res
+
+            master_df['DateObj'] = parse_date_series(master_df['Date'])
             master_df = master_df.dropna(subset=['DateObj']).copy()
+            # Strict date boundaries: eliminate future dates (beyond today) and legacy pre-2026 data
+            today_cutoff = pd.Timestamp.now() + pd.Timedelta(days=1)
+            master_df = master_df[(master_df['DateObj'] >= '2026-01-01') & (master_df['DateObj'] <= today_cutoff)].copy()
+
             if 'Stock_Available' not in master_df.columns:
                 master_df['Stock_Available'] = 0.0
             master_df['Stock_Available'] = pd.to_numeric(master_df['Stock_Available'], errors='coerce').fillna(0.0)
@@ -453,7 +485,15 @@ if check_password():
             master_df['Month'] = master_df['DateObj'].dt.strftime('%Y-%m')
             master_df['Day'] = master_df['DateObj'].dt.strftime('%d/%m/%Y')
             master_df['SKU'] = master_df['SKU'].astype(str)
-            master_df['Parent_SKU'] = master_df.get('Parent_SKU', master_df.get('Product Group', 'General')).astype(str)
+            
+            # Clean and ensure Category_Desc
+            if 'Category_Desc' not in master_df.columns:
+                master_df['Category_Desc'] = 'อื่นๆ / ไม่ระบุหมวด'
+            else:
+                master_df['Category_Desc'] = master_df['Category_Desc'].fillna('อื่นๆ / ไม่ระบุหมวด')
+                master_df.loc[master_df['Category_Desc'].isin(['nan', 'None', '-', '']), 'Category_Desc'] = 'อื่นๆ / ไม่ระบุหมวด'
+
+            master_df['Parent_SKU'] = master_df['Category_Desc'].astype(str)
             master_df['Product'] = master_df.get('Product', master_df.get('Item Name', 'General')).astype(str)
             master_df['Platform'] = master_df.get('Platform', pd.Series(['Shopee'] * len(master_df))).fillna('Shopee').astype(str)
             master_df['Shop_Name'] = master_df.get('Shop_Name', pd.Series(['Main Shop'] * len(master_df))).fillna('Main Shop').astype(str)
@@ -522,8 +562,8 @@ if check_password():
         selected_years = st.multiselect("ปี (Year)", all_years, default=all_years)
 
     with col_p4:
-        all_parents = sorted(list(set([str(s) for s in base_df['Parent_SKU'].unique() if str(s) not in ['-', 'nan', 'NaN']])))
-        selected_parents = st.multiselect("กลุ่มสินค้า (Category)", all_parents)
+        all_cats = sorted([str(s) for s in base_df['Category_Desc'].dropna().unique() if str(s).strip() not in ['-', 'nan', 'NaN', 'None', '']])
+        selected_cats = st.multiselect("หมวดหมู่สินค้า (Category)", all_cats)
 
     filtered_df = base_df.copy()
     if sel_platform != 'ทั้งหมด (All)':
@@ -532,16 +572,16 @@ if check_password():
         filtered_df = filtered_df[filtered_df['Shop_Name'].isin(sel_shops)]
     if selected_years:
         filtered_df = filtered_df[filtered_df['Year'].isin(selected_years)]
-    if selected_parents:
-        filtered_df = filtered_df[filtered_df['Parent_SKU'].isin(selected_parents)]
+    if selected_cats:
+        filtered_df = filtered_df[filtered_df['Category_Desc'].isin(selected_cats)]
 
     # ================= 8. Base Tables for Fixed Row Mapping =================
-    monthly_base = filtered_df.groupby('Month').agg({'Revenue': 'sum'}).reset_index().sort_values('Month')
-    # ================= 8. Base Tables for Fixed Row Mapping =================
     monthly_base = filtered_df.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index().sort_values('Month')
-    prod_base = filtered_df.groupby('Product').agg({'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'}).reset_index().sort_values('Revenue', ascending=False)
-    prod_base['Avg CR'] = (prod_base['Buyers'] / prod_base['Visitors'] * 100).fillna(0)
-    prod_base['Avg Price'] = (prod_base['Revenue'] / prod_base['Units_Sold']).fillna(0)
+    cat_base = filtered_df.groupby('Category_Desc').agg({
+        'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'
+    }).reset_index().sort_values('Revenue', ascending=False)
+    cat_base['Avg CR'] = (cat_base['Buyers'] / cat_base['Visitors'] * 100).fillna(0)
+    cat_base['Avg Price'] = (cat_base['Revenue'] / cat_base['Units_Sold']).fillna(0)
 
     daily_base = filtered_df.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index().sort_values('DateObj')
     sku_base = filtered_df.groupby('SKU').agg({
@@ -571,13 +611,13 @@ if check_password():
         return []
 
     selected_months = get_selected_items('tb_month', 'Month', monthly_base)
-    selected_prods = get_selected_items('tb_prod', 'Product', prod_base)
+    selected_cats_table = get_selected_items('tb_cat', 'Category_Desc', cat_base)
     selected_days = get_selected_items('tb_day', 'Day', daily_base)
     selected_skus = get_selected_items('tb_sku', 'SKU', sku_base)
 
     cross_df = filtered_df.copy()
     if selected_months: cross_df = cross_df[cross_df['Month'].isin(selected_months)]
-    if selected_prods: cross_df = cross_df[cross_df['Product'].isin(selected_prods)]
+    if selected_cats_table: cross_df = cross_df[cross_df['Category_Desc'].isin(selected_cats_table)]
     if selected_days: cross_df = cross_df[cross_df['Day'].isin(selected_days)]
     if selected_skus: cross_df = cross_df[cross_df['SKU'].isin(selected_skus)]
 
@@ -593,11 +633,11 @@ if check_password():
     rev_per_buyer = (rev / buy) if buy > 0 else 0
     aov = (rev / orders) if orders > 0 else (rev / buy if buy > 0 else 0)
 
-    kpi1.metric("Revenue (ยอดขาย)", f"฿{rev:,.0f}")
+    kpi1.metric("Revenue (ยอดขาย)", f"{rev:,.0f}")
     kpi2.metric("SKU Visitors", f"{vis:,.0f}")
     kpi3.metric("SKU CR%", f"{cr*100:,.2f}%")
-    kpi4.metric("Rev per Buyers", f"฿{rev_per_buyer:,.0f}")
-    kpi5.metric("AOV", f"฿{aov:,.0f}")
+    kpi4.metric("Rev per Buyers", f"{rev_per_buyer:,.0f}")
+    kpi5.metric("AOV", f"{aov:,.0f}")
     kpi6.metric("Buyers (ผู้ซื้อ)", f"{buy:,.0f}")
     kpi7.metric("Units Sold", f"{unit:,.0f}")
 
@@ -616,16 +656,18 @@ if check_password():
     disp_monthly['% Rev'] = (disp_monthly['Revenue'] / disp_monthly['Revenue'].sum() * 100).fillna(0) if disp_monthly['Revenue'].sum() > 0 else 0
     st.session_state['tb_month_rendered_ids'] = disp_monthly['Month'].tolist()
 
-    # 2. Product Group
-    if selected_prods:
-        disp_prod = prod_base.copy()
+    # 2. Product Group (Category Description)
+    if selected_cats_table:
+        disp_cat = cat_base.copy()
     else:
-        disp_prod = cross_df.groupby('Product').agg({'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'}).reset_index()
-        disp_prod = disp_prod[disp_prod['Revenue'] > 0]
-        disp_prod['Avg CR'] = (disp_prod['Buyers'] / disp_prod['Visitors'] * 100).fillna(0)
-        disp_prod['Avg Price'] = (disp_prod['Revenue'] / disp_prod['Units_Sold']).fillna(0)
-        disp_prod = disp_prod.sort_values('Revenue', ascending=False)
-    st.session_state['tb_prod_rendered_ids'] = disp_prod['Product'].tolist()
+        disp_cat = cross_df.groupby('Category_Desc').agg({
+            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'
+        }).reset_index()
+        disp_cat = disp_cat[disp_cat['Revenue'] > 0]
+        disp_cat['Avg CR'] = (disp_cat['Buyers'] / disp_cat['Visitors'] * 100).fillna(0)
+        disp_cat['Avg Price'] = (disp_cat['Revenue'] / disp_cat['Units_Sold']).fillna(0)
+        disp_cat = disp_cat.sort_values('Revenue', ascending=False)
+    st.session_state['tb_cat_rendered_ids'] = disp_cat['Category_Desc'].tolist()
 
     # 3. Order Date
     if selected_days:
@@ -650,9 +692,10 @@ if check_password():
     st.session_state['tb_sku_rendered_ids'] = disp_sku['SKU'].tolist()
 
     col_config = {
-        "Revenue": st.column_config.NumberColumn("Revenue", format="฿%.2f"),
+        "Category_Desc": st.column_config.TextColumn("หมวดหมู่สินค้า (Category)"),
+        "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f"),
         "Avg CR": st.column_config.NumberColumn("Avg CR", format="%.2f %%"),
-        "Avg Price": st.column_config.NumberColumn("Avg Price", format="฿%.2f"),
+        "Avg Price": st.column_config.NumberColumn("Avg Price", format="%,.2f"),
         "% Rev": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100),
         "Stock_Available": st.column_config.NumberColumn("Stock (พร้อมขาย)", format="%d ชิ้น")
     }
@@ -680,11 +723,11 @@ if check_password():
             )
             st.plotly_chart(fig, use_container_width=True)
     with col_m3:
-        st.write("**Product Group**")
+        st.write("**Product Group (หมวดหมู่สินค้า)**")
         st.dataframe(
-            disp_prod[['Product', 'Revenue', 'Visitors', 'Avg CR', 'Avg Price', 'A2C', 'Buyers', 'Units_Sold']], 
+            disp_cat[['Category_Desc', 'Revenue', 'Visitors', 'Avg CR', 'Avg Price', 'A2C', 'Buyers', 'Units_Sold']], 
             hide_index=True, use_container_width=True,
-            on_select="rerun", selection_mode="multi-row", key="tb_prod",
+            on_select="rerun", selection_mode="multi-row", key="tb_cat",
             column_config=col_config
         )
 
