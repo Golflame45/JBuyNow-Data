@@ -108,61 +108,94 @@ if check_password():
             created = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
             return created['id']
 
-    def move_file_to_archive(service, file_id, current_parent_id, archive_parent_id):
-        service.files().update(
-            fileId=file_id,
-            addParents=archive_parent_id,
-            removeParents=current_parent_id,
-            fields='id, parents'
-        ).execute()
+    def list_files_in_folder_recursive(service, folder_id, path=""):
+        q = f"'{folder_id}' in parents and trashed = false"
+        res = service.files().list(q=q, fields='files(id, name, mimeType)').execute()
+        files = []
+        for it in res.get('files', []):
+            current_path = f"{path}/{it['name']}" if path else it['name']
+            if it['mimeType'] == 'application/vnd.google-apps.folder':
+                files.extend(list_files_in_folder_recursive(service, it['id'], current_path))
+            elif it['name'].endswith(('.xlsx', '.xls', '.csv')):
+                files.append((it['id'], it['name'], current_path))
+        return files
+
+    def extract_date_from_name_or_content(file_name, raw_df=None):
+        # Pattern 1: 25Sep2026 or 25-Sep-2026
+        m1 = re.search(r'(\d{1,2})\s*[-_]?\s*([A-Za-z]{3})\s*[-_]?\s*(202\d)', file_name)
+        if m1:
+            d, m, y = m1.groups()
+            try:
+                return datetime.strptime(f"{d}{m}{y}", "%d%b%Y").strftime("%Y-%m-%d")
+            except: pass
+
+        # Pattern 2: 20260925
+        m2 = re.search(r'(202\d)(\d{2})(\d{2})', file_name)
+        if m2:
+            return f"{m2.group(1)}-{m2.group(2)}-{m2.group(3)}"
+
+        # Pattern 3: Search header content for Date Range
+        if raw_df is not None:
+            for r in range(min(5, len(raw_df))):
+                row_txt = " ".join([str(x) for x in raw_df.iloc[r].dropna().tolist()])
+                m3 = re.search(r'(202\d-\d{2}-\d{2})', row_txt)
+                if m3:
+                    return m3.group(1)
+        return None
 
     # ================= 2. Multi-Channel Data Normalization =================
     def parse_raw_sales_file(file_bytes, file_name, folder_name=""):
-        # Determine format
-        if file_name.endswith('.csv'):
-            df = pd.read_csv(file_bytes)
-        else:
-            df = pd.read_excel(file_bytes)
-
+        raw_df = pd.read_excel(file_bytes, header=None) if not file_name.endswith('.csv') else pd.read_csv(file_bytes, header=None)
+        date_str = extract_date_from_name_or_content(file_name, raw_df)
+        
         # Detect Platform
-        name_check = (file_name + " " + folder_name).lower()
-        if "lazada" in name_check or "laz" in name_check:
-            platform = "Lazada"
-        else:
-            platform = "Shopee"
+        name_check = f"{folder_name}/{file_name}".lower()
+        platform = "Lazada" if "lazada" in name_check or "laz" in name_check else "Shopee"
+        
+        # Detect Shop Name from folder name
+        shop_name = "JBuyNow"
+        for part in folder_name.split('/'):
+            part_clean = part.replace("Lazada", "").replace("Shopee", "").strip(" _-")
+            if part_clean and not re.search(r'202\d', part_clean):
+                shop_name = part_clean
+                break
 
-        # Detect Shop Name from folder name or file name
-        shop_name = "General"
-        if folder_name:
-            shop_name = folder_name.replace("Lazada_", "").replace("Shopee_", "").replace("Lazada", "").replace("Shopee", "").strip(" _-")
-            if not shop_name:
-                shop_name = folder_name
-        elif "_" in file_name:
-            parts = file_name.split("_")
-            if len(parts) >= 2:
-                shop_name = parts[1]
+        # Dynamic Header Detection (Lazada header on row 5, Shopee header on row 0)
+        header_idx = 0
+        for r in range(min(15, len(raw_df))):
+            row_vals = [str(x).strip().lower() for x in raw_df.iloc[r].dropna().tolist()]
+            if any(k in row_vals for k in ['seller sku', 'sku', 'product name', 'item name', 'revenue', 'ยอดขาย', 'รหัสสินค้า']):
+                header_idx = r
+                break
+                
+        df = raw_df.iloc[header_idx+1:].copy()
+        df.columns = [str(c).strip() for c in raw_df.iloc[header_idx].tolist()]
 
-        # Extract Date
-        date_match = re.search(r'202\d{5}', file_name)
-        file_date_str = None
-        if date_match:
-            try:
-                d = datetime.strptime(date_match.group(0), '%Y%m%d')
-                file_date_str = d.strftime('%Y-%m-%d')
-            except:
-                pass
+        # Lazada Specific Handling: Parent Product ffill and SKU row filtering
+        if platform == "Lazada":
+            if 'Product Name' in df.columns:
+                df['Product Name'] = df['Product Name'].ffill()
+            if 'Product Visitors' in df.columns:
+                v_clean = pd.to_numeric(df['Product Visitors'].astype(str).str.replace(',', '').str.replace('-', ''), errors='coerce')
+                df['Product Visitors'] = v_clean.ffill().fillna(0)
+                
+            sku_col = next((c for c in df.columns if c.lower() in ['seller sku', 'sku']), None)
+            if sku_col:
+                has_valid_skus = df[~df[sku_col].astype(str).str.strip().isin(['-', '', 'nan', 'None'])]
+                if len(has_valid_skus) > 0:
+                    df = has_valid_skus.copy()
 
         # Mapping for Shopee & Lazada columns
         col_mappings = {
-            'Revenue': ['ยอดขาย (ที่มีการสั่งซื้อทั้งหมด) (THB)', 'ยอดขาย (THB)', 'LAZ Revenue', 'Revenue', 'ยอดขาย'],
-            'Visitors': ['ผู้เข้าชมสินค้า', 'การเข้าชมสินค้า', 'SKU_Visitors', 'Visitors'],
-            'Buyers': ['ผู้ซื้อ (ที่มีการสั่งซื้อทั้งหมด)', 'ผู้ซื้อ', 'Buyer', 'Buyers'],
-            'Units_Sold': ['จำนวนที่ขายได้ (ที่มีการสั่งซื้อทั้งหมด)', 'จำนวนที่ขายได้', 'UnitsSold', 'Units Sold', 'Units_Sold'],
-            'A2C': ['จำนวนที่ขายได้ (เพิ่มสินค้าในรถเข็น)', 'A2C Units', 'Add2CartUnits', 'A2C'],
-            'Orders': ['ทั้งหมด', 'Orders', 'Order No.'],
-            'SKU': ['SKU', 'Seller SKU', 'SKU Code', 'รหัสสินค้า'],
-            'Parent_SKU': ['Parent SKU', 'Product Group', 'กลุ่มสินค้า'],
-            'Product': ['ผลิตภัณฑ์', 'Item Name', 'Product Name', 'Product Group', 'ชื่อสินค้า'],
+            'Revenue': ['Revenue', 'ยอดขาย (ที่มีการสั่งซื้อทั้งหมด) (THB)', 'ยอดขาย (THB)', 'LAZ Revenue', 'ยอดขาย'],
+            'Visitors': ['Product Visitors', 'ผู้เข้าชมสินค้า', 'การเข้าชมสินค้า', 'SKU_Visitors', 'Visitors'],
+            'Buyers': ['Buyers', 'ผู้ซื้อ (ที่มีการสั่งซื้อทั้งหมด)', 'ผู้ซื้อ', 'Buyer'],
+            'Units_Sold': ['Units Sold', 'จำนวนที่ขายได้ (ที่มีการสั่งซื้อทั้งหมด)', 'จำนวนที่ขายได้', 'UnitsSold'],
+            'A2C': ['Add to Cart Units', 'จำนวนที่ขายได้ (เพิ่มสินค้าในรถเข็น)', 'A2C Units', 'Add2CartUnits', 'A2C'],
+            'Orders': ['Orders', 'ทั้งหมด', 'Order No.'],
+            'SKU': ['Seller SKU', 'SKU', 'SKU Code', 'รหัสสินค้า'],
+            'Parent_SKU': ['Parent SKU', 'Product ID', 'Product Group', 'กลุ่มสินค้า'],
+            'Product': ['Product Name', 'ผลิตภัณฑ์', 'Item Name', 'ชื่อสินค้า'],
             'Date': ['Date', 'OrderDate', 'Posting Date', 'วันที่']
         }
 
@@ -177,33 +210,34 @@ if check_password():
             if not matched:
                 clean_df[standard_col] = None
 
-        clean_df['Platform'] = platform
-        clean_df['Shop_Name'] = shop_name if shop_name else "Main Shop"
-
-        # Date handling
-        if file_date_str and clean_df['Date'].isna().all():
-            clean_df['Date'] = file_date_str
+        if date_str:
+            clean_df['Date'] = date_str
         elif clean_df['Date'].isna().all():
             clean_df['Date'] = datetime.today().strftime('%Y-%m-%d')
+
+        clean_df['Platform'] = platform
+        clean_df['Shop_Name'] = shop_name
 
         # Clean numeric columns
         numeric_cols = ['Revenue', 'Visitors', 'Buyers', 'Units_Sold', 'A2C', 'Orders']
         for nc in numeric_cols:
             clean_df[nc] = (
                 clean_df[nc].astype(str)
-                .str.replace(',', '')
-                .str.replace('-', '0')
-                .str.replace('nan', '0')
-                .str.replace('None', '0')
+                .str.replace(',', '', regex=False)
+                .str.replace('-', '0', regex=False)
+                .str.replace('nan', '0', regex=False)
+                .str.replace('None', '0', regex=False)
             )
             clean_df[nc] = pd.to_numeric(clean_df[nc], errors='coerce').fillna(0)
 
-        clean_df['SKU'] = clean_df['SKU'].astype(str)
-        clean_df['Parent_SKU'] = clean_df['Parent_SKU'].astype(str)
-        clean_df['Product'] = clean_df['Product'].astype(str)
-        clean_df['DateObj'] = pd.to_datetime(clean_df['Date'], format='mixed', dayfirst=True, errors='coerce')
-        clean_df = clean_df.dropna(subset=['DateObj'])
+        clean_df['SKU'] = clean_df['SKU'].astype(str).str.strip()
+        clean_df['Parent_SKU'] = clean_df['Parent_SKU'].astype(str).str.strip()
+        clean_df['Product'] = clean_df['Product'].astype(str).str.strip()
+        
+        clean_df['DateObj'] = pd.to_datetime(clean_df['Date'], errors='coerce')
+        clean_df = clean_df.dropna(subset=['DateObj']).copy()
         clean_df['Date'] = clean_df['DateObj'].dt.strftime('%Y-%m-%d')
+        clean_df = clean_df.drop(columns=['DateObj'])
 
         return clean_df
 
@@ -222,29 +256,30 @@ if check_password():
         else:
             master_df = pd.DataFrame()
 
-        # Step 2: Scan 01_Drop_Inbox (both direct files and subfolders)
-        inbox_items = list_files_in_folder(service, INBOX_FOLDER_ID)
+        # Step 2: Scan 01_Drop_Inbox recursively across any subfolders and month folders
+        all_inbox_files = list_files_in_folder_recursive(service, INBOX_FOLDER_ID)
         new_dfs = []
         files_processed_count = 0
 
-        for item in inbox_items:
-            # Case A: Subfolder (e.g. Lazada_S.ELECTRIC, Shopee_Shop1)
-            if item['mimeType'] == 'application/vnd.google-apps.folder':
-                sub_files = list_files_in_folder(service, item['id'])
-                for sf in sub_files:
-                    if sf['name'].endswith(('.xlsx', '.xls', '.csv')):
-                        fb = download_file_bytes(service, sf['id'])
-                        df_parsed = parse_raw_sales_file(fb, sf['name'], folder_name=item['name'])
-                        new_dfs.append(df_parsed)
-                        move_file_to_archive(service, sf['id'], item['id'], ARCHIVE_FOLDER_ID)
-                        files_processed_count += 1
-            # Case B: Direct file in 01_Drop_Inbox
-            elif item['name'].endswith(('.xlsx', '.xls', '.csv')):
-                fb = download_file_bytes(service, item['id'])
-                df_parsed = parse_raw_sales_file(fb, item['name'])
-                new_dfs.append(df_parsed)
-                move_file_to_archive(service, item['id'], INBOX_FOLDER_ID, ARCHIVE_FOLDER_ID)
-                files_processed_count += 1
+        existing_combos = set()
+        if not master_df.empty and 'Date' in master_df.columns and 'Platform' in master_df.columns:
+            existing_combos = set(zip(master_df['Platform'].astype(str), master_df['Date'].astype(str)))
+
+        for fid, fname, fpath in all_inbox_files:
+            date_cand = extract_date_from_name_or_content(fname)
+            plat_cand = "Lazada" if "lazada" in fpath.lower() else "Shopee"
+            # Skip downloading if already present in master
+            if existing_combos and date_cand and (plat_cand, date_cand) in existing_combos:
+                continue
+
+            try:
+                fb = download_file_bytes(service, fid)
+                df_parsed = parse_raw_sales_file(fb, fname, folder_name=fpath)
+                if not df_parsed.empty:
+                    new_dfs.append(df_parsed)
+                    files_processed_count += 1
+            except Exception:
+                pass
 
         # Step 3: Append, Deduplicate, and Save back to 02_Master_Data
         if new_dfs:
@@ -261,7 +296,12 @@ if check_password():
             csv_buf = io.BytesIO()
             full_df.to_csv(csv_buf, index=False, encoding='utf-8-sig')
             csv_buf.seek(0)
-            upload_file_bytes(service, MASTER_FOLDER_ID, 'Master_Sales_Full.csv', csv_buf, mime_type='text/csv')
+            
+            if master_file_item:
+                media = MediaIoBaseUpload(csv_buf, mimetype='text/csv', resumable=True)
+                service.files().update(fileId=master_file_item['id'], media_body=media).execute()
+            else:
+                upload_file_bytes(service, MASTER_FOLDER_ID, 'Master_Sales_Full.csv', csv_buf, mime_type='text/csv')
             master_df = full_df
 
         return "ซิงก์สำเร็จ", files_processed_count
@@ -279,6 +319,23 @@ if check_password():
             if m_item:
                 fh = download_file_bytes(service, m_item['id'])
                 master_df = pd.read_csv(fh)
+            elif os.path.exists('Master_Sales_Full.csv'):
+                master_df = pd.read_csv('Master_Sales_Full.csv')
+            else:
+                # Direct scan from 01_Drop_Inbox if Master file not yet created
+                all_inbox_files = list_files_in_folder_recursive(service, INBOX_FOLDER_ID)
+                inbox_dfs = []
+                for fid, fname, fpath in all_inbox_files:
+                    try:
+                        fb = download_file_bytes(service, fid)
+                        df_p = parse_raw_sales_file(fb, fname, folder_name=fpath)
+                        if not df_p.empty:
+                            inbox_dfs.append(df_p)
+                    except Exception:
+                        pass
+                if inbox_dfs:
+                    master_df = pd.concat(inbox_dfs, ignore_index=True)
+                    master_df = master_df.drop_duplicates(subset=['Platform', 'Shop_Name', 'Date', 'SKU'], keep='last')
             
             # Find SKU Master if exists in 02_Master_Data
             sku_item = next((f for f in master_files if 'sku' in f['name'].lower() and 'master' in f['name'].lower()), None)
@@ -290,10 +347,10 @@ if check_password():
                     sku_master_df = pd.read_excel(sku_bytes)
                 
                 # Normalize SKU column name in master
-                sku_col = next((c for c in sku_master_df.columns if c.lower() in ['sku', 'seller sku', 'รหัสสินค้า']), None)
+                sku_col = next((c for c in sku_master_df.columns if str(c).strip().lower() in ['no.', 'no', 'item no.', 'sku', 'seller sku', 'รหัสสินค้า']), None)
                 if sku_col:
-                    sku_master_df['SKU'] = sku_master_df[sku_col].astype(str)
-                    master_df['SKU'] = master_df['SKU'].astype(str)
+                    sku_master_df['SKU'] = sku_master_df[sku_col].astype(str).str.strip()
+                    master_df['SKU'] = master_df['SKU'].astype(str).str.strip()
                     # Merge ERP Catalog
                     master_df = master_df.merge(sku_master_df, on='SKU', how='left', suffixes=('', '_ERP'))
 
@@ -322,7 +379,9 @@ if check_password():
                     master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0)
         else:
             # Local fallback for offline testing
-            if os.path.exists('Master_Shopee_Data.csv'):
+            if os.path.exists('Master_Sales_Full.csv'):
+                master_df = pd.read_csv('Master_Sales_Full.csv')
+            elif os.path.exists('Master_Shopee_Data.csv'):
                 master_df = pd.read_csv('Master_Shopee_Data.csv')
                 # Minimal shopee column adaptation for local fallback
                 if 'ยอดขาย (ที่มีการสั่งซื้อทั้งหมด) (THB)' in master_df.columns:
