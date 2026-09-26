@@ -4,6 +4,7 @@ import plotly.express as px
 import io
 import os
 import re
+import json
 from datetime import datetime
 
 # Google Drive API Libraries
@@ -50,7 +51,6 @@ if check_password():
         if not GOOGLE_API_AVAILABLE:
             return None
         creds = None
-        import json
 
         # Check Streamlit Cloud Secrets
         if "gcp_service_account" in st.secrets:
@@ -412,7 +412,6 @@ if check_password():
 
         # Fallback to local stock file if Stock_Available is missing or all 0
         if not master_df.empty and ('Stock_Available' not in master_df.columns or master_df['Stock_Available'].sum() == 0):
-            import os
             for p in ['.', '..']:
                 if os.path.exists(p):
                     for fn in sorted(os.listdir(p), reverse=True):
