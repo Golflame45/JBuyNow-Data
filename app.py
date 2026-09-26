@@ -292,16 +292,18 @@ if check_password():
             # Deduplicate by Platform, Shop_Name, Date, SKU
             full_df = full_df.drop_duplicates(subset=['Platform', 'Shop_Name', 'Date', 'SKU'], keep='last')
             
-            # Save back to Google Drive
-            csv_buf = io.BytesIO()
-            full_df.to_csv(csv_buf, index=False, encoding='utf-8-sig')
-            csv_buf.seek(0)
-            
-            if master_file_item:
-                media = MediaIoBaseUpload(csv_buf, mimetype='text/csv', resumable=True)
-                service.files().update(fileId=master_file_item['id'], media_body=media).execute()
-            else:
-                upload_file_bytes(service, MASTER_FOLDER_ID, 'Master_Sales_Full.csv', csv_buf, mime_type='text/csv')
+            # Attempt saving back to Google Drive (if quota permits)
+            try:
+                csv_buf = io.BytesIO()
+                full_df.to_csv(csv_buf, index=False, encoding='utf-8-sig')
+                csv_buf.seek(0)
+                if master_file_item:
+                    media = MediaIoBaseUpload(csv_buf, mimetype='text/csv', resumable=True)
+                    service.files().update(fileId=master_file_item['id'], media_body=media).execute()
+                else:
+                    upload_file_bytes(service, MASTER_FOLDER_ID, 'Master_Sales_Full.csv', csv_buf, mime_type='text/csv')
+            except Exception:
+                pass
             master_df = full_df
 
         return "ซิงก์สำเร็จ", files_processed_count
@@ -314,28 +316,41 @@ if check_password():
 
         if service:
             master_files = list_files_in_folder(service, MASTER_FOLDER_ID)
-            # Find Master Sales
+            # Find Master Sales in Google Drive or local
             m_item = next((f for f in master_files if f['name'] == 'Master_Sales_Full.csv'), None)
             if m_item:
                 fh = download_file_bytes(service, m_item['id'])
                 master_df = pd.read_csv(fh)
             elif os.path.exists('Master_Sales_Full.csv'):
                 master_df = pd.read_csv('Master_Sales_Full.csv')
-            else:
-                # Direct scan from 01_Drop_Inbox if Master file not yet created
-                all_inbox_files = list_files_in_folder_recursive(service, INBOX_FOLDER_ID)
-                inbox_dfs = []
-                for fid, fname, fpath in all_inbox_files:
-                    try:
-                        fb = download_file_bytes(service, fid)
-                        df_p = parse_raw_sales_file(fb, fname, folder_name=fpath)
-                        if not df_p.empty:
-                            inbox_dfs.append(df_p)
-                    except Exception:
-                        pass
-                if inbox_dfs:
-                    master_df = pd.concat(inbox_dfs, ignore_index=True)
-                    master_df = master_df.drop_duplicates(subset=['Platform', 'Shop_Name', 'Date', 'SKU'], keep='last')
+
+            # Scan 01_Drop_Inbox for all files or any new daily files!
+            all_inbox_files = list_files_in_folder_recursive(service, INBOX_FOLDER_ID)
+            existing_combos = set()
+            if not master_df.empty and 'Date' in master_df.columns and 'Platform' in master_df.columns:
+                existing_combos = set(zip(master_df['Platform'].astype(str), master_df['Date'].astype(str)))
+
+            inbox_dfs = []
+            for fid, fname, fpath in all_inbox_files:
+                date_cand = extract_date_from_name_or_content(fname)
+                plat_cand = "Lazada" if "lazada" in fpath.lower() else "Shopee"
+                if existing_combos and date_cand and (plat_cand, date_cand) in existing_combos:
+                    continue
+                try:
+                    fb = download_file_bytes(service, fid)
+                    df_p = parse_raw_sales_file(fb, fname, folder_name=fpath)
+                    if not df_p.empty:
+                        inbox_dfs.append(df_p)
+                except Exception:
+                    pass
+
+            if inbox_dfs:
+                new_data = pd.concat(inbox_dfs, ignore_index=True)
+                if not master_df.empty:
+                    master_df = pd.concat([master_df, new_data], ignore_index=True)
+                else:
+                    master_df = new_data
+                master_df = master_df.drop_duplicates(subset=['Platform', 'Shop_Name', 'Date', 'SKU'], keep='last')
             
             # Find SKU Master if exists in 02_Master_Data
             sku_item = next((f for f in master_files if 'sku' in f['name'].lower() and 'master' in f['name'].lower()), None)
