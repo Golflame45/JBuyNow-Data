@@ -245,9 +245,21 @@ if check_password():
         if missing_d.any():
             d_parsed.loc[missing_d] = pd.to_datetime(clean_df['Date'][missing_d], format='mixed', dayfirst=True, errors='coerce')
         clean_df['DateObj'] = d_parsed
-        clean_df = clean_df.dropna(subset=['DateObj']).copy()
         clean_df['Date'] = clean_df['DateObj'].dt.strftime('%Y-%m-%d')
         clean_df = clean_df.drop(columns=['DateObj'])
+        # Aggregate multiple listings of the same SKU on the same date (e.g. Lazada multiple product IDs with same SKU)
+        clean_df = clean_df.sort_values('Revenue', ascending=False)
+        agg_dict = {
+            'Revenue': 'sum',
+            'Visitors': 'sum',
+            'Buyers': 'sum',
+            'Units_Sold': 'sum',
+            'A2C': 'sum',
+            'Orders': 'sum',
+            'Parent_SKU': 'first',
+            'Product': 'first'
+        }
+        clean_df = clean_df.groupby(['Platform', 'Shop_Name', 'Date', 'SKU'], as_index=False).agg(agg_dict)
 
         return clean_df
 
@@ -319,7 +331,7 @@ if check_password():
         return "ซิงก์สำเร็จ", files_processed_count
 
     # ================= 4. Load Master & SKU Master Data =================
-    @st.cache_data(ttl=600)
+    @st.cache_data(ttl=86400)
     def load_active_data():
         service = get_drive_service()
         master_df = pd.DataFrame()
@@ -361,6 +373,11 @@ if check_password():
                 else:
                     master_df = new_data
                 master_df = master_df.drop_duplicates(subset=['Platform', 'Shop_Name', 'Date', 'SKU'], keep='last')
+                # Cache to local disk so subsequent runs load in 0.05 seconds
+                try:
+                    master_df.to_csv('Master_Sales_Full.csv', index=False, encoding='utf-8-sig')
+                except Exception:
+                    pass
             
             # Find SKU Master if exists in 02_Master_Data
             sku_item = next((f for f in master_files if 'sku' in f['name'].lower() and 'master' in f['name'].lower()), None)
@@ -652,7 +669,7 @@ if check_password():
         disp_monthly = monthly_base.copy()
     else:
         disp_monthly = cross_df.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index()
-        disp_monthly = disp_monthly[disp_monthly['Revenue'] > 0].sort_values('Month')
+        disp_monthly = disp_monthly[(disp_monthly['Revenue'] > 0) | (disp_monthly['Visitors'] > 0)].sort_values('Month')
     disp_monthly['% Rev'] = (disp_monthly['Revenue'] / disp_monthly['Revenue'].sum() * 100).fillna(0) if disp_monthly['Revenue'].sum() > 0 else 0
     st.session_state['tb_month_rendered_ids'] = disp_monthly['Month'].tolist()
 
@@ -663,10 +680,10 @@ if check_password():
         disp_cat = cross_df.groupby('Category_Desc').agg({
             'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'
         }).reset_index()
-        disp_cat = disp_cat[disp_cat['Revenue'] > 0]
+        disp_cat = disp_cat[(disp_cat['Revenue'] > 0) | (disp_cat['Visitors'] > 0) | (disp_cat['A2C'] > 0)]
         disp_cat['Avg CR'] = (disp_cat['Buyers'] / disp_cat['Visitors'] * 100).fillna(0)
         disp_cat['Avg Price'] = (disp_cat['Revenue'] / disp_cat['Units_Sold']).fillna(0)
-        disp_cat = disp_cat.sort_values('Revenue', ascending=False)
+        disp_cat = disp_cat.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
     st.session_state['tb_cat_rendered_ids'] = disp_cat['Category_Desc'].tolist()
 
     # 3. Order Date
@@ -674,7 +691,7 @@ if check_password():
         disp_daily = daily_base.copy()
     else:
         disp_daily = cross_df.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index()
-        disp_daily = disp_daily[disp_daily['Revenue'] > 0].sort_values('DateObj')
+        disp_daily = disp_daily[(disp_daily['Revenue'] > 0) | (disp_daily['Visitors'] > 0)].sort_values('DateObj')
     st.session_state['tb_day_rendered_ids'] = disp_daily['Day'].tolist()
 
     # 4. SKU Code
@@ -685,10 +702,10 @@ if check_password():
             'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum',
             'Stock_Available': 'first'
         }).reset_index()
-        disp_sku = disp_sku[disp_sku['Revenue'] > 0]
+        disp_sku = disp_sku[(disp_sku['Revenue'] > 0) | (disp_sku['Visitors'] > 0) | (disp_sku['A2C'] > 0)]
         disp_sku['Avg CR'] = (disp_sku['Buyers'] / disp_sku['Visitors'] * 100).fillna(0)
         disp_sku['Avg Price'] = (disp_sku['Revenue'] / disp_sku['Units_Sold']).fillna(0)
-        disp_sku = disp_sku.sort_values('Revenue', ascending=False)
+        disp_sku = disp_sku.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
     st.session_state['tb_sku_rendered_ids'] = disp_sku['SKU'].tolist()
 
     col_config = {
