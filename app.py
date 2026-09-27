@@ -751,52 +751,73 @@ if check_password():
 
     st.markdown("---")
 
-    # ================= 10. Display Tables =================
-    # Section ที่ถูกคลิก จะแสดงข้อมูลเต็มไม่กลายเป็น 0
-    # Section อื่นๆ ที่ไม่ได้ถูกคลิก แถวที่ไม่เกี่ยวข้องจะ "หายไปเลย" (ไม่เป็น 0)
+    # ================= 10. Display Tables with Symmetric Cross-Filtering =================
+    # Section ที่ถูกคลิก จะแสดงตัวเลือกที่เกี่ยวข้อง และ Section อื่นๆ จะอัปเดตตัวเลขให้ตรงกัน 100%
     
-    # 1. Order Month
-    if selected_months:
-        disp_monthly = monthly_base.copy()
-    else:
-        disp_monthly = cross_df.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index()
-        disp_monthly = disp_monthly[(disp_monthly['Revenue'] > 0) | (disp_monthly['Visitors'] > 0)].sort_values('Month')
+    # Reset filter banner if any selection is active
+    has_active_selection = bool(selected_months or selected_cats_table or selected_days or selected_skus)
+    if has_active_selection:
+        col_rst1, col_rst2 = st.columns([3, 1])
+        with col_rst1:
+            active_info = []
+            if selected_months: active_info.append(f"เดือน: {', '.join(selected_months)}")
+            if selected_cats_table: active_info.append(f"หมวดหมู่: {', '.join(selected_cats_table)}")
+            if selected_days: active_info.append(f"วันที่: {', '.join(selected_days)}")
+            if selected_skus: active_info.append(f"SKU: {', '.join(selected_skus[:3])}{'...' if len(selected_skus)>3 else ''}")
+            st.info(f"🎯 **กำลังกรองข้อมูลตาม:** {' | '.join(active_info)}")
+        with col_rst2:
+            if st.button("🔄 ล้างตัวกรองทั้งหมด (Reset)", use_container_width=True):
+                for k in ['tb_month', 'tb_cat', 'tb_day', 'tb_sku']:
+                    if k in st.session_state:
+                        del st.session_state[k]
+                st.rerun()
+
+    # 1. Order Month (Filtered by Cat, Day, SKU - but not Month itself)
+    df_for_month = filtered_df.copy()
+    if selected_cats_table: df_for_month = df_for_month[df_for_month['Category_Desc'].isin(selected_cats_table)]
+    if selected_days: df_for_month = df_for_month[df_for_month['Day'].isin(selected_days)]
+    if selected_skus: df_for_month = df_for_month[df_for_month['SKU'].isin(selected_skus)]
+    disp_monthly = df_for_month.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index()
+    disp_monthly = disp_monthly[(disp_monthly['Revenue'] > 0) | (disp_monthly['Visitors'] > 0)].sort_values('Month')
     disp_monthly['% Rev'] = (disp_monthly['Revenue'] / disp_monthly['Revenue'].sum() * 100).fillna(0) if disp_monthly['Revenue'].sum() > 0 else 0
     st.session_state['tb_month_rendered_ids'] = disp_monthly['Month'].tolist()
 
-    # 2. Product Group (Category Description)
-    if selected_cats_table:
-        disp_cat = cat_base.copy()
-    else:
-        disp_cat = cross_df.groupby('Category_Desc').agg({
-            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'
-        }).reset_index()
-        disp_cat = disp_cat[(disp_cat['Revenue'] > 0) | (disp_cat['Visitors'] > 0) | (disp_cat['A2C'] > 0)]
-        disp_cat['Avg CR'] = (disp_cat['Buyers'] / disp_cat['Visitors'] * 100).fillna(0)
-        disp_cat['Avg Price'] = (disp_cat['Revenue'] / disp_cat['Units_Sold']).fillna(0)
-        disp_cat = disp_cat.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
+    # 2. Product Group (Filtered by Month, Day, SKU - but not Cat itself)
+    df_for_cat = filtered_df.copy()
+    if selected_months: df_for_cat = df_for_cat[df_for_cat['Month'].isin(selected_months)]
+    if selected_days: df_for_cat = df_for_cat[df_for_cat['Day'].isin(selected_days)]
+    if selected_skus: df_for_cat = df_for_cat[df_for_cat['SKU'].isin(selected_skus)]
+    disp_cat = df_for_cat.groupby('Category_Desc').agg({
+        'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'
+    }).reset_index()
+    disp_cat = disp_cat[(disp_cat['Revenue'] > 0) | (disp_cat['Visitors'] > 0) | (disp_cat['A2C'] > 0)]
+    disp_cat['Avg CR'] = (disp_cat['Buyers'] / disp_cat['Visitors'] * 100).fillna(0)
+    disp_cat['Avg Price'] = (disp_cat['Revenue'] / disp_cat['Units_Sold']).fillna(0)
+    disp_cat = disp_cat.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
     st.session_state['tb_cat_rendered_ids'] = disp_cat['Category_Desc'].tolist()
 
-    # 3. Order Date
-    if selected_days:
-        disp_daily = daily_base.copy()
-    else:
-        disp_daily = cross_df.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index()
-        disp_daily = disp_daily[(disp_daily['Revenue'] > 0) | (disp_daily['Visitors'] > 0)].sort_values('DateObj')
+    # 3. Order Date (Filtered by Month, Cat, SKU - but not Day itself)
+    df_for_day = filtered_df.copy()
+    if selected_months: df_for_day = df_for_day[df_for_day['Month'].isin(selected_months)]
+    if selected_cats_table: df_for_day = df_for_day[df_for_day['Category_Desc'].isin(selected_cats_table)]
+    if selected_skus: df_for_day = df_for_day[df_for_day['SKU'].isin(selected_skus)]
+    disp_daily = df_for_day.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index()
+    disp_daily = disp_daily[(disp_daily['Revenue'] > 0) | (disp_daily['Visitors'] > 0)].sort_values('DateObj')
     st.session_state['tb_day_rendered_ids'] = disp_daily['Day'].tolist()
 
-    # 4. SKU Code
-    if selected_skus:
-        disp_sku = sku_base.copy()
-    else:
-        disp_sku = cross_df.groupby('SKU').agg({
-            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum',
-            'Stock_Available': 'first'
-        }).reset_index()
-        disp_sku = disp_sku[(disp_sku['Revenue'] > 0) | (disp_sku['Visitors'] > 0) | (disp_sku['A2C'] > 0)]
-        disp_sku['Avg CR'] = (disp_sku['Buyers'] / disp_sku['Visitors'] * 100).fillna(0)
-        disp_sku['Avg Price'] = (disp_sku['Revenue'] / disp_sku['Units_Sold']).fillna(0)
-        disp_sku = disp_sku.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
+    # 4. SKU Code (Filtered by Month, Cat, Day - but not SKU itself)
+    df_for_sku = filtered_df.copy()
+    if selected_months: df_for_sku = df_for_sku[df_for_sku['Month'].isin(selected_months)]
+    if selected_cats_table: df_for_sku = df_for_sku[df_for_sku['Category_Desc'].isin(selected_cats_table)]
+    if selected_days: df_for_sku = df_for_sku[df_for_sku['Day'].isin(selected_days)]
+    disp_sku = df_for_sku.groupby('SKU').agg({
+        'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum',
+        'Stock_Available': 'first'
+    }).reset_index()
+    disp_sku = disp_sku[(disp_sku['Revenue'] > 0) | (disp_sku['Visitors'] > 0) | (disp_sku['A2C'] > 0)]
+    disp_sku['Avg CR'] = (disp_sku['Buyers'] / disp_sku['Visitors'] * 100).fillna(0)
+    disp_sku['Avg Price'] = (disp_sku['Revenue'] / disp_sku['Units_Sold']).fillna(0)
+    disp_sku = disp_sku.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
     st.session_state['tb_sku_rendered_ids'] = disp_sku['SKU'].tolist()
 
     col_config = {
