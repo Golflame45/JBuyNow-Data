@@ -177,68 +177,159 @@ if check_password():
         df = raw_df.iloc[header_idx+1:].copy()
         df.columns = [str(c).strip() for c in raw_df.iloc[header_idx].tolist()]
 
-        # Lazada Specific Handling: Parent Product ffill and SKU row filtering
+        # Multi-Channel Parsing Logic
         if platform == "Lazada":
-            if 'Product Name' in df.columns:
-                df['Product Name'] = df['Product Name'].ffill()
-            if 'Product Visitors' in df.columns:
-                v_clean = pd.to_numeric(df['Product Visitors'].astype(str).str.replace(',', '').str.replace('-', ''), errors='coerce')
-                df['Product Visitors'] = v_clean.ffill().fillna(0)
+            p_id_col = next((c for c in df.columns if c.lower() in ['product id', 'item id', 'id']), None)
+            p_name_col = next((c for c in df.columns if c.lower() in ['product name', 'ชื่อสินค้า', 'item name']), None)
+            sku_col = next((c for c in df.columns if c.lower() in ['seller sku', 'sku', 'รหัสสินค้า']), None)
+            vis_col = next((c for c in df.columns if 'visitor' in c.lower() or 'ผู้เข้าชม' in c.lower()), None)
+            rev_col = next((c for c in df.columns if 'revenue' in c.lower() or 'ยอดขาย' in c.lower()), None)
+            buyer_col = next((c for c in df.columns if 'buyer' in c.lower() or 'ผู้ซื้อ' in c.lower()), None)
+            unit_col = next((c for c in df.columns if 'units sold' in c.lower() or 'จำนวนที่ขาย' in c.lower()), None)
+            a2c_col = next((c for c in df.columns if 'add to cart units' in c.lower() or 'รถเข็น' in c.lower() or 'a2c' in c.lower()), None)
+            order_col = next((c for c in df.columns if 'order' in c.lower() or 'คำสั่งซื้อ' in c.lower()), None)
+
+            def to_num(val):
+                return float(str(val).replace(',', '').replace('-', '0').strip() or 0)
+
+            clean_rows = []
+            i = 0
+            n = len(df)
+            while i < n:
+                curr = df.iloc[i]
+                sku_val = str(curr[sku_col]).strip() if sku_col else '-'
+                is_parent = sku_val in ['-', '', 'nan', 'None']
                 
-            sku_col = next((c for c in df.columns if c.lower() in ['seller sku', 'sku']), None)
-            if sku_col:
-                has_valid_skus = df[~df[sku_col].astype(str).str.strip().isin(['-', '', 'nan', 'None'])]
-                if len(has_valid_skus) > 0:
-                    df = has_valid_skus.copy()
+                p_id = str(curr[p_id_col]).strip() if p_id_col else ''
+                p_name = str(curr[p_name_col]).strip() if p_name_col else ''
+                
+                p_vis = to_num(curr[vis_col]) if vis_col else 0.0
+                p_rev = to_num(curr[rev_col]) if rev_col else 0.0
+                p_buyers = to_num(curr[buyer_col]) if buyer_col else 0.0
+                p_units = to_num(curr[unit_col]) if unit_col else 0.0
+                p_a2c = to_num(curr[a2c_col]) if a2c_col else 0.0
+                p_orders = to_num(curr[order_col]) if order_col else 0.0
 
-        # Mapping for Shopee & Lazada columns
-        col_mappings = {
-            'Revenue': ['Revenue', 'ยอดขาย (ที่มีการสั่งซื้อทั้งหมด) (THB)', 'ยอดขาย (THB)', 'LAZ Revenue', 'ยอดขาย'],
-            'Visitors': ['Product Visitors', 'ผู้เข้าชมสินค้า', 'การเข้าชมสินค้า', 'SKU_Visitors', 'Visitors'],
-            'Buyers': ['Buyers', 'ผู้ซื้อ (ที่มีการสั่งซื้อทั้งหมด)', 'ผู้ซื้อ', 'Buyer'],
-            'Units_Sold': ['Units Sold', 'จำนวนที่ขายได้ (ที่มีการสั่งซื้อทั้งหมด)', 'จำนวนที่ขายได้', 'UnitsSold'],
-            'A2C': ['Add to Cart Units', 'จำนวนที่ขายได้ (เพิ่มสินค้าในรถเข็น)', 'A2C Units', 'Add2CartUnits', 'A2C'],
-            'Orders': ['Orders', 'ทั้งหมด', 'Order No.'],
-            'SKU': ['Seller SKU', 'SKU', 'SKU Code', 'รหัสสินค้า'],
-            'Parent_SKU': ['Parent SKU', 'Product ID', 'Product Group', 'กลุ่มสินค้า'],
-            'Product': ['Product Name', 'ผลิตภัณฑ์', 'Item Name', 'ชื่อสินค้า'],
-            'Date': ['Date', 'OrderDate', 'Posting Date', 'วันที่']
-        }
+                if is_parent:
+                    j = i + 1
+                    children = []
+                    while j < n:
+                        next_row = df.iloc[j]
+                        next_sku = str(next_row[sku_col]).strip() if sku_col else '-'
+                        next_pid = str(next_row[p_id_col]).strip() if p_id_col else ''
+                        if next_sku not in ['-', '', 'nan', 'None'] and (next_pid == p_id or not next_pid or next_pid == '-'):
+                            children.append(next_row)
+                            j += 1
+                        else:
+                            break
+                            
+                    if len(children) > 0:
+                        for c_idx, child in enumerate(children):
+                            c_sku = str(child[sku_col]).strip()
+                            c_name = str(child[p_name_col]).strip() if p_name_col and str(child[p_name_col]).strip() not in ['-', '', 'nan'] else p_name
+                            c_rev = to_num(child[rev_col]) if rev_col else 0.0
+                            c_buyers = to_num(child[buyer_col]) if buyer_col else 0.0
+                            c_units = to_num(child[unit_col]) if unit_col else 0.0
+                            c_a2c = to_num(child[a2c_col]) if a2c_col else 0.0
+                            c_orders = to_num(child[order_col]) if order_col else 0.0
+                            c_vis = p_vis if c_idx == 0 else 0.0
+                            
+                            clean_rows.append({
+                                'Platform': platform,
+                                'Shop_Name': shop_name,
+                                'Date': date_str,
+                                'SKU': c_sku,
+                                'Revenue': c_rev,
+                                'Visitors': c_vis,
+                                'Buyers': c_buyers,
+                                'Units_Sold': c_units,
+                                'A2C': c_a2c,
+                                'Orders': c_orders,
+                                'Parent_SKU': p_id,
+                                'Product': c_name
+                            })
+                        i = j
+                    else:
+                        found_sku = f"PID-{p_id}" if p_id and p_id != '-' else (p_name[:20] if p_name else 'UNKNOWN')
+                        clean_rows.append({
+                            'Platform': platform,
+                            'Shop_Name': shop_name,
+                            'Date': date_str,
+                            'SKU': found_sku,
+                            'Revenue': p_rev,
+                            'Visitors': p_vis,
+                            'Buyers': p_buyers,
+                            'Units_Sold': p_units,
+                            'A2C': p_a2c,
+                            'Orders': p_orders,
+                            'Parent_SKU': p_id,
+                            'Product': p_name
+                        })
+                        i += 1
+                else:
+                    clean_rows.append({
+                        'Platform': platform,
+                        'Shop_Name': shop_name,
+                        'Date': date_str,
+                        'SKU': sku_val,
+                        'Revenue': p_rev,
+                        'Visitors': p_vis,
+                        'Buyers': p_buyers,
+                        'Units_Sold': p_units,
+                        'A2C': p_a2c,
+                        'Orders': p_orders,
+                        'Parent_SKU': p_id,
+                        'Product': p_name
+                    })
+                    i += 1
+            clean_df = pd.DataFrame(clean_rows)
+        else:
+            col_mappings = {
+                'Revenue': ['Revenue', 'ยอดขาย (ที่มีการสั่งซื้อทั้งหมด) (THB)', 'ยอดขาย (THB)', 'LAZ Revenue', 'ยอดขาย'],
+                'Visitors': ['Product Visitors', 'ผู้เข้าชมสินค้า', 'การเข้าชมสินค้า', 'SKU_Visitors', 'Visitors'],
+                'Buyers': ['Buyers', 'ผู้ซื้อ (ที่มีการสั่งซื้อทั้งหมด)', 'ผู้ซื้อ', 'Buyer'],
+                'Units_Sold': ['Units Sold', 'จำนวนที่ขายได้ (ที่มีการสั่งซื้อทั้งหมด)', 'จำนวนที่ขายได้', 'UnitsSold'],
+                'A2C': ['Add to Cart Units', 'จำนวนที่ขายได้ (เพิ่มสินค้าในรถเข็น)', 'A2C Units', 'Add2CartUnits', 'A2C'],
+                'Orders': ['Orders', 'ทั้งหมด', 'Order No.'],
+                'SKU': ['Seller SKU', 'SKU', 'SKU Code', 'รหัสสินค้า'],
+                'Parent_SKU': ['Parent SKU', 'Product ID', 'Product Group', 'กลุ่มสินค้า'],
+                'Product': ['Product Name', 'ผลิตภัณฑ์', 'Item Name', 'ชื่อสินค้า'],
+                'Date': ['Date', 'OrderDate', 'Posting Date', 'วันที่']
+            }
 
-        clean_df = pd.DataFrame()
-        for standard_col, candidate_cols in col_mappings.items():
-            matched = False
-            for cand in candidate_cols:
-                if cand in df.columns:
-                    clean_df[standard_col] = df[cand]
-                    matched = True
-                    break
-            if not matched:
-                clean_df[standard_col] = None
+            clean_df = pd.DataFrame()
+            for standard_col, candidate_cols in col_mappings.items():
+                matched = False
+                for cand in candidate_cols:
+                    if cand in df.columns:
+                        clean_df[standard_col] = df[cand]
+                        matched = True
+                        break
+                if not matched:
+                    clean_df[standard_col] = None
 
-        if date_str:
-            clean_df['Date'] = date_str
-        elif clean_df['Date'].isna().all():
-            clean_df['Date'] = datetime.today().strftime('%Y-%m-%d')
+            if date_str:
+                clean_df['Date'] = date_str
+            elif clean_df['Date'].isna().all():
+                clean_df['Date'] = datetime.today().strftime('%Y-%m-%d')
 
-        clean_df['Platform'] = platform
-        clean_df['Shop_Name'] = shop_name
+            clean_df['Platform'] = platform
+            clean_df['Shop_Name'] = shop_name
 
-        # Clean numeric columns
-        numeric_cols = ['Revenue', 'Visitors', 'Buyers', 'Units_Sold', 'A2C', 'Orders']
-        for nc in numeric_cols:
-            clean_df[nc] = (
-                clean_df[nc].astype(str)
-                .str.replace(',', '', regex=False)
-                .str.replace('-', '0', regex=False)
-                .str.replace('nan', '0', regex=False)
-                .str.replace('None', '0', regex=False)
-            )
-            clean_df[nc] = pd.to_numeric(clean_df[nc], errors='coerce').fillna(0)
+            numeric_cols = ['Revenue', 'Visitors', 'Buyers', 'Units_Sold', 'A2C', 'Orders']
+            for nc in numeric_cols:
+                clean_df[nc] = (
+                    clean_df[nc].astype(str)
+                    .str.replace(',', '', regex=False)
+                    .str.replace('-', '0', regex=False)
+                    .str.replace('nan', '0', regex=False)
+                    .str.replace('None', '0', regex=False)
+                )
+                clean_df[nc] = pd.to_numeric(clean_df[nc], errors='coerce').fillna(0)
 
-        clean_df['SKU'] = clean_df['SKU'].astype(str).str.strip()
-        clean_df['Parent_SKU'] = clean_df['Parent_SKU'].astype(str).str.strip()
-        clean_df['Product'] = clean_df['Product'].astype(str).str.strip()
+            clean_df['SKU'] = clean_df['SKU'].astype(str).str.strip()
+            clean_df['Parent_SKU'] = clean_df['Parent_SKU'].astype(str).str.strip()
+            clean_df['Product'] = clean_df['Product'].astype(str).str.strip()
         
         d_parsed = pd.to_datetime(clean_df['Date'], format='%Y-%m-%d', errors='coerce')
         missing_d = d_parsed.isna()
