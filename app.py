@@ -628,6 +628,25 @@ if check_password():
     # ================= 6. UI Banner & Top Filters =================
     st.markdown("""
         <style>
+        /* 1. Hide the top-right running spinner/man icon entirely */
+        div[data-testid="stStatusWidget"], [data-testid="stStatusWidget"] {
+            display: none !important;
+            visibility: hidden !important;
+        }
+
+        /* 2. Prevent opacity fade/dimming during rerun (No graying out) */
+        div[data-testid="stAppViewContainer"] .main,
+        div[data-testid="stAppViewBlockContainer"],
+        .element-container, [data-testid="stElementContainer"] {
+            opacity: 1 !important;
+            transition: none !important;
+        }
+
+        /* 3. Smooth table rendering & prevent canvas flicker */
+        div[data-testid="stDataFrame"] {
+            transition: none !important;
+        }
+
         .pbi-bar {
             background: linear-gradient(90deg, #FF007F 0%, #0000FF 100%);
             color: white; padding: 12px 18px;
