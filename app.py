@@ -645,6 +645,25 @@ if check_password():
         /* 3. Smooth table rendering & prevent canvas flicker */
         div[data-testid="stDataFrame"] {
             transition: none !important;
+            max-width: 100% !important;
+            width: 100% !important;
+        }
+
+        /* 4. ANTI-LAYOUT-SHIFT: Strictly lock column widths & prevent flex expansion */
+        @media (min-width: 768px) {
+            div[data-testid="stHorizontalBlock"], .stHorizontalBlock {
+                flex-wrap: nowrap !important;
+            }
+            div[data-testid="stColumn"], div[data-testid="column"], .stColumn {
+                flex-grow: 0 !important;
+                flex-shrink: 0 !important;
+            }
+        }
+
+        /* 5. Plotly container height lock to avoid collapsing */
+        div[data-testid="stPlotlyChart"], .stPlotlyChart {
+            min-height: 320px !important;
+            max-width: 100% !important;
         }
 
         .pbi-bar {
@@ -776,21 +795,26 @@ if check_password():
 
         # ================= 10. Display Tables with Symmetric Cross-Filtering =================
         has_active_selection = bool(selected_months or selected_cats_table or selected_days or selected_skus)
-        if has_active_selection:
-            col_rst1, col_rst2 = st.columns([3, 1])
-            with col_rst1:
+        col_rst1, col_rst2 = st.columns([4, 1])
+        with col_rst1:
+            if has_active_selection:
                 active_info = []
                 if selected_months: active_info.append(f"เดือน: {', '.join(selected_months)}")
                 if selected_cats_table: active_info.append(f"หมวดหมู่: {', '.join(selected_cats_table)}")
                 if selected_days: active_info.append(f"วันที่: {', '.join(selected_days)}")
                 if selected_skus: active_info.append(f"SKU: {', '.join(selected_skus[:3])}{'...' if len(selected_skus)>3 else ''}")
-                st.info(f"🎯 **กำลังกรองข้อมูลตาม:** {' | '.join(active_info)}")
-            with col_rst2:
-                if st.button("🔄 ล้างตัวกรองทั้งหมด (Reset)", use_container_width=True):
+                st.markdown(f"<div style='background-color:#e8f4fd; color:#0c5460; padding:8px 14px; border-radius:6px; font-size:14px; border:1px solid #bee5eb;'>🎯 <b>กำลังกรองข้อมูลตาม:</b> {' | '.join(active_info)}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div style='background-color:#f8f9fa; color:#6c757d; padding:8px 14px; border-radius:6px; font-size:14px; border:1px solid #e9ecef;'>💡 <i>คลิกเลือกแถวในตารางด้านล่างเพื่อ Cross-Filter กรองยอดขายและพฤติกรรมลูกค้า</i></div>", unsafe_allow_html=True)
+        with col_rst2:
+            if has_active_selection:
+                if st.button("🔄 ล้างตัวกรอง (Reset)", use_container_width=True):
                     for k in ['tb_month', 'tb_cat', 'tb_day', 'tb_sku']:
                         if k in st.session_state:
                             del st.session_state[k]
                     st.rerun()
+            else:
+                st.button("🔄 ล้างตัวกรอง (Reset)", use_container_width=True, disabled=True)
 
         # 1. Order Month (Filtered by Cat, Day, SKU - but not Month itself)
         df_for_month = filtered_df.copy()
@@ -840,13 +864,43 @@ if check_password():
         disp_sku = disp_sku.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
         st.session_state['tb_sku_rendered_ids'] = disp_sku['SKU'].tolist()
 
-        col_config = {
-            "Category_Desc": st.column_config.TextColumn("หมวดหมู่สินค้า (Category)"),
-            "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f"),
-            "Avg CR": st.column_config.NumberColumn("Avg CR", format="%.2f %%"),
-            "Avg Price": st.column_config.NumberColumn("Avg Price", format="%,.2f"),
-            "% Rev": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100),
-            "Stock_Available": st.column_config.NumberColumn("Stock (พร้อมขาย)", format="%d ชิ้น")
+        # Explicit column configurations with fixed widths to prevent Glide Data Grid layout shifts
+        col_config_month = {
+            "Month": st.column_config.TextColumn("Month", width="small"),
+            "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f", width="medium"),
+            "% Rev": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100, width="small"),
+            "Visitors": st.column_config.NumberColumn("Visitors", format="%,d", width="small")
+        }
+
+        col_config_cat = {
+            "Category_Desc": st.column_config.TextColumn("หมวดหมู่สินค้า (Category)", width="large"),
+            "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f", width="medium"),
+            "Visitors": st.column_config.NumberColumn("Visitors", format="%,d", width="small"),
+            "Avg CR": st.column_config.NumberColumn("Avg CR", format="%.2f %%", width="small"),
+            "Avg Price": st.column_config.NumberColumn("Avg Price", format="%,.2f", width="small"),
+            "A2C": st.column_config.NumberColumn("A2C", format="%,d", width="small"),
+            "Buyers": st.column_config.NumberColumn("Buyers", format="%,d", width="small"),
+            "Units_Sold": st.column_config.NumberColumn("Units", format="%,d", width="small")
+        }
+
+        col_config_day = {
+            "Day": st.column_config.TextColumn("Day", width="medium"),
+            "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f", width="medium"),
+            "Visitors": st.column_config.NumberColumn("Visitors", format="%,d", width="small"),
+            "Buyers": st.column_config.NumberColumn("Buyers", format="%,d", width="small"),
+            "Units_Sold": st.column_config.NumberColumn("Units", format="%,d", width="small")
+        }
+
+        col_config_sku = {
+            "SKU": st.column_config.TextColumn("SKU Code", width="large"),
+            "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f", width="medium"),
+            "Stock_Available": st.column_config.NumberColumn("Stock", format="%d ชิ้น", width="small"),
+            "A2C": st.column_config.NumberColumn("A2C", format="%,d", width="small"),
+            "Visitors": st.column_config.NumberColumn("Visitors", format="%,d", width="small"),
+            "Avg CR": st.column_config.NumberColumn("Avg CR", format="%.2f %%", width="small"),
+            "Avg Price": st.column_config.NumberColumn("Avg Price", format="%,.2f", width="small"),
+            "Buyers": st.column_config.NumberColumn("Buyers", format="%,d", width="small"),
+            "Units_Sold": st.column_config.NumberColumn("Units", format="%,d", width="small")
         }
 
         # Middle Row (Fixed height 320px for perfect alignment & zero layout jump)
@@ -857,7 +911,7 @@ if check_password():
                 disp_monthly[['Month', 'Revenue', '% Rev', 'Visitors']], 
                 hide_index=True, use_container_width=True, height=320,
                 on_select="rerun", selection_mode="multi-row", key="tb_month",
-                column_config=col_config
+                column_config=col_config_month
             )
         with col_m2:
             st.write("**Revenue Trend by FGMONTHYEAR**")
@@ -872,13 +926,15 @@ if check_password():
                     transition={'duration': 0}
                 )
                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            else:
+                st.markdown("<div style='height:320px; display:flex; align-items:center; justify-content:center; background:#fafafa; border-radius:6px; color:#888;'>ไม่มีข้อมูลแนวโน้มยอดขายตามตัวกรองนี้</div>", unsafe_allow_html=True)
         with col_m3:
             st.write("**Product Group (หมวดหมู่สินค้า)**")
             st.dataframe(
                 disp_cat[['Category_Desc', 'Revenue', 'Visitors', 'Avg CR', 'Avg Price', 'A2C', 'Buyers', 'Units_Sold']], 
                 hide_index=True, use_container_width=True, height=320,
                 on_select="rerun", selection_mode="multi-row", key="tb_cat",
-                column_config=col_config
+                column_config=col_config_cat
             )
 
         st.markdown("---")
@@ -890,7 +946,7 @@ if check_password():
                 disp_daily[['Day', 'Revenue', 'Visitors', 'Buyers', 'Units_Sold']], 
                 hide_index=True, use_container_width=True, height=380,
                 on_select="rerun", selection_mode="multi-row", key="tb_day",
-                column_config=col_config
+                column_config=col_config_day
             )
         with col_d2:
             st.write("**SKU Code (รายสินค้า)**")
@@ -898,7 +954,7 @@ if check_password():
                 disp_sku[['SKU', 'Revenue', 'Stock_Available', 'A2C', 'Visitors', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold']], 
                 hide_index=True, use_container_width=True, height=380,
                 on_select="rerun", selection_mode="multi-row", key="tb_sku",
-                column_config=col_config
+                column_config=col_config_sku
             )
 
     render_interactive_dashboard(filtered_df)
