@@ -7,6 +7,7 @@ import os
 import re
 import json
 import html as html_lib
+import streamlit.components.v1 as components
 from datetime import datetime, timezone, timedelta
 
 # Thai Timezone (UTC+7)
@@ -1143,7 +1144,8 @@ if check_password():
             )
         def render_tree_view_html(df_input, search_term=""):
             if df_input.empty:
-                return "<div style='padding:20px; color:#888; text-align:center;'>ไม่มีข้อมูลสินค้าตามตัวกรองที่เลือก</div>"
+                empty_html = """<!DOCTYPE html><html><body style="background:transparent;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#888;display:flex;align-items:center;justify-content:center;height:100px;"><p>ไม่มีข้อมูลสินค้าตามตัวกรองที่เลือก</p></body></html>"""
+                return empty_html, False, 0
 
             df_tree = df_input.copy()
             if 'Parent_SKU' in df_tree.columns:
@@ -1220,7 +1222,7 @@ if check_password():
                 a2c_val = row['A2C']
 
                 has_children = row['is_multi'] and pid in variants_dict
-                stock_color = "#28a745" if stock_val > 0 else "#dc3545"
+                stock_color = "#22c55e" if stock_val > 0 else "#ef4444"
 
                 if has_children:
                     children = variants_dict[pid]
@@ -1231,18 +1233,18 @@ if check_password():
                         c_unit = c['Units_Sold']
                         c_stock = c['Stock_Available']
                         c_a2c = c['A2C']
-                        c_stock_color = "#28a745" if c_stock > 0 else "#dc3545"
+                        c_stock_color = "#22c55e" if c_stock > 0 else "#ef4444"
 
                         var_rows.append(f"""
-                        <tr style="border-bottom: 1px solid #f0f0f0;">
-                          <td style="padding: 6px 8px 6px 28px; color: #495057;">
-                            <span style="font-family: monospace; font-weight: 600; color: #0066cc;">{c_sku}</span>
+                        <tr class="var-row">
+                          <td style="padding: 6px 8px 6px 28px;">
+                            <span class="sku-tag">{c_sku}</span>
                           </td>
                           <td style="padding: 6px 8px; text-align: right; font-weight: 500;">{c_rev:,.0f}</td>
-                          <td style="padding: 6px 8px; text-align: right; color: #aaa;">-</td>
+                          <td style="padding: 6px 8px; text-align: right; color: var(--text-dim);">-</td>
                           <td style="padding: 6px 8px; text-align: right;">{c_unit:,.0f}</td>
                           <td style="padding: 6px 8px; text-align: right; color: {c_stock_color}; font-weight: 500;">{c_stock:,.0f}</td>
-                          <td style="padding: 6px 12px 6px 8px; text-align: right; color: #666;">{c_a2c:,.0f}</td>
+                          <td style="padding: 6px 12px 6px 8px; text-align: right; color: var(--text-muted);">{c_a2c:,.0f}</td>
                         </tr>
                         """)
 
@@ -1250,24 +1252,24 @@ if check_password():
                     is_open = 'open' if pid in open_pids else ''
 
                     rows_html.append(f"""
-                    <tr style="border-bottom: 1px solid #e9ecef; background: #ffffff;">
+                    <tr class="parent-row">
                       <td colspan="6" style="padding: 0;">
                         <details {is_open} style="width: 100%;">
-                          <summary style="padding: 8px 10px; cursor: pointer; font-weight: 600; list-style: none; display: flex; align-items: center; justify-content: space-between; user-select: none;">
+                          <summary>
                             <div style="display: flex; align-items: center; gap: 8px; width: 44%; overflow: hidden;">
-                              <span style="font-size: 11px; background: #e8f0fe; color: #1a73e8; padding: 2px 6px; border-radius: 4px; font-weight: bold; flex-shrink: 0;">[+] {row['variant_count']} ตัวเลือก</span>
-                              <span style="color: #212529; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{pname}">{pname}</span>
+                              <span class="badge">[+] {row['variant_count']} ตัวเลือก</span>
+                              <span class="pname" title="{pname}">{pname}</span>
                             </div>
-                            <div style="text-align: right; width: 14%; font-weight: bold; color: #111; font-size: 13px;">{rev_val:,.0f}</div>
-                            <div style="text-align: right; width: 10%; color: #333; font-size: 13px;">{vis_val:,.0f}</div>
-                            <div style="text-align: right; width: 10%; color: #333; font-size: 13px;">{unit_val:,.0f}</div>
+                            <div style="text-align: right; width: 14%; font-weight: bold; font-size: 13px;">{rev_val:,.0f}</div>
+                            <div style="text-align: right; width: 10%; font-size: 13px; color: var(--text-muted);">{vis_val:,.0f}</div>
+                            <div style="text-align: right; width: 10%; font-size: 13px; color: var(--text-muted);">{unit_val:,.0f}</div>
                             <div style="text-align: right; width: 10%; color: {stock_color}; font-weight: bold; font-size: 13px;">{stock_val:,.0f}</div>
-                            <div style="text-align: right; width: 12%; color: #555; padding-right: 12px; font-size: 13px;">{a2c_val:,.0f}</div>
+                            <div style="text-align: right; width: 12%; color: var(--text-muted); padding-right: 12px; font-size: 13px;">{a2c_val:,.0f}</div>
                           </summary>
-                          <div style="background: #fdfdfd; padding: 4px 10px 8px 10px; border-top: 1px dashed #dee2e6; border-bottom: 1px solid #dee2e6;">
-                            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                          <div class="child-container">
+                            <table class="child-table">
                               <thead>
-                                <tr style="color: #888; border-bottom: 1px solid #eee;">
+                                <tr>
                                   <th style="padding: 4px 8px 4px 28px; text-align: left; width: 44%;">↳ ตัวเลือกย่อย (Variant SKU)</th>
                                   <th style="padding: 4px 8px; text-align: right; width: 14%;">ยอดขาย (฿)</th>
                                   <th style="padding: 4px 8px; text-align: right; width: 10%;">คนเข้าชม</th>
@@ -1288,43 +1290,213 @@ if check_password():
                 else:
                     s_sku = html_lib.escape(str(row['SKU']))
                     rows_html.append(f"""
-                    <tr style="border-bottom: 1px solid #e9ecef; background: #ffffff;">
+                    <tr class="parent-row">
                       <td style="padding: 8px 10px; width: 44%;">
                         <div style="display: flex; align-items: center; gap: 8px; overflow: hidden;">
-                          <span style="font-family: monospace; font-weight: bold; color: #212529; font-size: 13px; flex-shrink: 0;">{s_sku}</span>
-                          <span style="color: #6c757d; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{pname}">{pname}</span>
+                          <span class="single-sku">{s_sku}</span>
+                          <span class="pname-single" title="{pname}">{pname}</span>
                         </div>
                       </td>
-                      <td style="padding: 8px; text-align: right; font-weight: bold; color: #111; width: 14%; font-size: 13px;">{rev_val:,.0f}</td>
-                      <td style="padding: 8px; text-align: right; color: #333; width: 10%; font-size: 13px;">{vis_val:,.0f}</td>
-                      <td style="padding: 8px; text-align: right; color: #333; width: 10%; font-size: 13px;">{unit_val:,.0f}</td>
+                      <td style="padding: 8px; text-align: right; font-weight: bold; width: 14%; font-size: 13px;">{rev_val:,.0f}</td>
+                      <td style="padding: 8px; text-align: right; width: 10%; font-size: 13px; color: var(--text-muted);">{vis_val:,.0f}</td>
+                      <td style="padding: 8px; text-align: right; width: 10%; font-size: 13px; color: var(--text-muted);">{unit_val:,.0f}</td>
                       <td style="padding: 8px; text-align: right; color: {stock_color}; font-weight: bold; width: 10%; font-size: 13px;">{stock_val:,.0f}</td>
-                      <td style="padding: 8px 12px 8px 8px; text-align: right; color: #555; width: 12%; font-size: 13px;">{a2c_val:,.0f}</td>
+                      <td style="padding: 8px 12px 8px 8px; text-align: right; color: var(--text-muted); width: 12%; font-size: 13px;">{a2c_val:,.0f}</td>
                     </tr>
                     """)
 
             all_rows = "".join(rows_html)
-            trunc_msg = f"<div style='font-size:11px; color:#6c757d; padding:4px 6px;'>* แสดง 100 อันดับแรกจากทั้งหมด {total_parents:,} สินค้า (พิมพ์ค้นหาเพื่อดูสินค้าอื่นเพิ่มเติม)</div>" if is_truncated else ""
-            return f"""
-            <div style="height: 310px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; border: 1px solid #dee2e6; border-radius: 6px; background: white; box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);">
-              <table style="width: 100%; border-collapse: collapse; text-align: left;">
-                <thead>
-                  <tr style="background: #f8f9fa; color: #495057; font-size: 12px; font-weight: bold; border-bottom: 2px solid #dee2e6; position: sticky; top: 0; z-index: 10;">
-                    <th style="padding: 8px 10px; width: 44%;">สินค้า / รหัส SKU</th>
-                    <th style="padding: 8px; text-align: right; width: 14%;">ยอดขาย (฿)</th>
-                    <th style="padding: 8px; text-align: right; width: 10%;">คนเข้าชม</th>
-                    <th style="padding: 8px; text-align: right; width: 10%;">ชิ้นที่ขาย</th>
-                    <th style="padding: 8px; text-align: right; width: 10%;">สต็อก</th>
-                    <th style="padding: 8px 12px 8px 8px; text-align: right; width: 12%;">ตะกร้า</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {all_rows}
-                </tbody>
-              </table>
-            </div>
-            {trunc_msg}
-            """
+
+            full_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {{
+    --bg: #0e1117;
+    --bg-card: #131720;
+    --bg-header: #1a1f2c;
+    --bg-hover: #1e2433;
+    --bg-child: #0b0e14;
+    --border: #262c3a;
+    --border-dashed: #363d50;
+    --text: #e6edf3;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+    --badge-bg: rgba(56, 189, 248, 0.15);
+    --badge-text: #38bdf8;
+    --badge-border: rgba(56, 189, 248, 0.35);
+    --sku-text: #38bdf8;
+  }}
+  @media (prefers-color-scheme: light) {{
+    :root {{
+      --bg: #ffffff;
+      --bg-card: #ffffff;
+      --bg-header: #f8f9fa;
+      --bg-hover: #f1f5f9;
+      --bg-child: #f8fafc;
+      --border: #e2e8f0;
+      --border-dashed: #cbd5e1;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --text-dim: #94a3b8;
+      --badge-bg: #e0f2fe;
+      --badge-text: #0284c7;
+      --badge-border: #bae6fd;
+      --sku-text: #0284c7;
+    }}
+  }}
+  * {{
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    background: transparent;
+    color: var(--text);
+    overflow: hidden;
+  }}
+  .table-container {{
+    height: 330px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-card);
+  }}
+  .table-container::-webkit-scrollbar {{
+    width: 6px;
+    height: 6px;
+  }}
+  .table-container::-webkit-scrollbar-track {{
+    background: transparent;
+  }}
+  .table-container::-webkit-scrollbar-thumb {{
+    background: var(--border);
+    border-radius: 3px;
+  }}
+  table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }}
+  thead tr {{
+    background: var(--bg-header);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    border-bottom: 1px solid var(--border);
+  }}
+  th {{
+    padding: 8px 10px;
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--text-muted);
+  }}
+  .parent-row {{
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-card);
+  }}
+  .parent-row:hover {{
+    background: var(--bg-hover);
+  }}
+  summary {{
+    padding: 8px 10px;
+    cursor: pointer;
+    font-weight: 600;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    user-select: none;
+  }}
+  summary::-webkit-details-marker {{
+    display: none;
+  }}
+  .badge {{
+    font-size: 11px;
+    background: var(--badge-bg);
+    color: var(--badge-text);
+    border: 1px solid var(--badge-border);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }}
+  .pname {{
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 13px;
+    color: var(--text);
+  }}
+  .pname-single {{
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
+    color: var(--text-muted);
+  }}
+  .single-sku {{
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text);
+    flex-shrink: 0;
+  }}
+  .sku-tag {{
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-weight: 600;
+    color: var(--sku-text);
+  }}
+  .child-container {{
+    background: var(--bg-child);
+    padding: 4px 10px 8px 10px;
+    border-top: 1px dashed var(--border-dashed);
+    border-bottom: 1px solid var(--border);
+  }}
+  .child-table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }}
+  .child-table th {{
+    font-size: 11px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+  }}
+  .var-row {{
+    border-bottom: 1px solid var(--border);
+  }}
+  .var-row:last-child {{
+    border-bottom: none;
+  }}
+  .var-row:hover {{
+    background: var(--bg-hover);
+  }}
+</style>
+</head>
+<body>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th style="text-align: left; width: 44%;">สินค้า / รหัส SKU</th>
+          <th style="text-align: right; width: 14%;">ยอดขาย (฿)</th>
+          <th style="text-align: right; width: 10%;">คนเข้าชม</th>
+          <th style="text-align: right; width: 10%;">ชิ้นที่ขาย</th>
+          <th style="text-align: right; width: 10%;">สต็อก</th>
+          <th style="text-align: right; width: 12%; padding-right: 12px;">ตะกร้า</th>
+        </tr>
+      </thead>
+      <tbody>
+        {all_rows}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>"""
+            return full_html, is_truncated, total_parents
 
         with col_d2:
             active_stock = active_stock_name or st.session_state.get('active_stock_file_name', '')
@@ -1348,8 +1520,10 @@ if check_password():
                     if active_stock:
                         st.markdown(f"<div style='text-align:right; font-size:12px; color:#0099ff; padding-top:6px;'>📦 สต็อก: {active_stock}</div>", unsafe_allow_html=True)
                 
-                tree_html = render_tree_view_html(df_for_sku, tree_search)
-                st.markdown(tree_html, unsafe_allow_html=True)
+                tree_html, is_trunc, total_p = render_tree_view_html(df_for_sku, tree_search)
+                components.html(tree_html, height=335)
+                if is_trunc:
+                    st.caption(f"* แสดง 100 อันดับแรกจากทั้งหมด {total_p:,} สินค้า (พิมพ์ค้นหาในช่องด้านบนเพื่อดูสินค้าอื่นเพิ่มเติม)")
                 
             with tab_grid:
                 st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
