@@ -426,6 +426,8 @@ if check_password():
     def load_active_data():
         service = get_drive_service()
         master_df = pd.DataFrame()
+        active_stock_name = ""
+        last_sync_str = ""
 
         def get_stock_file_sort_key(f, base_folder="."):
             fname = f.get('name', '') if isinstance(f, dict) else str(f)
@@ -459,8 +461,20 @@ if check_password():
             if m_item:
                 fh = download_file_bytes(service, m_item['id'])
                 master_df = pd.read_csv(fh)
+                raw_mtime = m_item.get('modifiedTime', '')
+                if raw_mtime:
+                    try:
+                        dt_utc = pd.to_datetime(raw_mtime)
+                        dt_bkk = dt_utc.tz_convert('Asia/Bangkok') if dt_utc.tzinfo else dt_utc.tz_localize('UTC').tz_convert('Asia/Bangkok')
+                        last_sync_str = dt_bkk.strftime('%d/%m/%Y %H:%M น.')
+                    except Exception:
+                        pass
             elif os.path.exists('Master_Sales_Full.csv'):
                 master_df = pd.read_csv('Master_Sales_Full.csv')
+                try:
+                    last_sync_str = datetime.fromtimestamp(os.path.getmtime('Master_Sales_Full.csv')).strftime('%d/%m/%Y %H:%M น.')
+                except Exception:
+                    pass
 
             # Scan 01_Drop_Inbox for all files or any new daily files!
             all_inbox_files = list_files_in_folder_recursive(service, INBOX_FOLDER_ID)
@@ -533,13 +547,18 @@ if check_password():
                         stock_summary = stock_df.groupby('SKU')['Stock_Available'].sum().reset_index()
                         master_df = master_df.merge(stock_summary, on='SKU', how='left')
                         master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0)
-                        st.session_state['active_stock_file_name'] = stock_item.get('name', '')
+                        active_stock_name = stock_item.get('name', '')
+                        st.session_state['active_stock_file_name'] = active_stock_name
                 except Exception:
                     pass
         else:
             # Local fallback for offline testing (Master_Sales_Full only)
             if os.path.exists('Master_Sales_Full.csv'):
                 master_df = pd.read_csv('Master_Sales_Full.csv')
+                try:
+                    last_sync_str = datetime.fromtimestamp(os.path.getmtime('Master_Sales_Full.csv')).strftime('%d/%m/%Y %H:%M น.')
+                except Exception:
+                    pass
 
         # Fallback to local SKU Master file if Category_Desc is missing
         if not master_df.empty and ('Category_Desc' not in master_df.columns or master_df['Category_Desc'].isna().all()):
@@ -583,7 +602,8 @@ if check_password():
                                         master_df = master_df.drop(columns=['Stock_Available'])
                                     master_df = master_df.merge(s_sum, on='SKU', how='left')
                                     master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0.0)
-                                    st.session_state['active_stock_file_name'] = fn
+                                    active_stock_name = fn
+                                    st.session_state['active_stock_file_name'] = active_stock_name
                                     break
                             except: pass
                     if 'Stock_Available' in master_df.columns and master_df['Stock_Available'].sum() > 0:
@@ -633,7 +653,11 @@ if check_password():
             master_df['Platform'] = master_df.get('Platform', pd.Series(['Shopee'] * len(master_df))).fillna('Shopee').astype(str)
             master_df['Shop_Name'] = master_df.get('Shop_Name', pd.Series(['Main Shop'] * len(master_df))).fillna('Main Shop').astype(str)
 
-        return master_df
+        return master_df, active_stock_name, last_sync_str
+
+    base_df, active_stock_name, last_sync_str = load_active_data()
+    st.session_state['active_stock_file_name'] = active_stock_name
+    st.session_state['last_sync_time_str'] = last_sync_str
 
     # ================= 5. Sidebar Sync & Administration =================
     with st.sidebar:
@@ -650,7 +674,9 @@ if check_password():
                     st.info("ไม่มีไฟล์ใหม่ในห้อง 01_Drop_Inbox (ข้อมูลเป็นปัจจุบันแล้ว)")
                 st.rerun()
 
-    base_df = load_active_data()
+        sync_disp = last_sync_str if last_sync_str else "ยังไม่มีบันทึกเวลา"
+        st.caption(f"⏱️ **ซิงก์ล่าสุด:** {sync_disp}")
+        st.markdown("<div style='font-size:11px; color:#888; line-height:1.3; margin-top:-5px;'>💡 <i>หากวันที่และเวลาเป็นปัจจุบันแล้ว ไม่จำเป็นต้องกดซิงก์ซ้ำครับ</i></div>", unsafe_allow_html=True)
 
     # ================= 6. UI Banner & Top Filters =================
     st.markdown("""
@@ -707,9 +733,16 @@ if check_password():
             box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
         }
         </style>
+    """, unsafe_allow_html=True)
+
+    sync_badge = f"<span style='font-size: 12px; font-weight: normal; background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.3);'>⏱️ ซิงก์ล่าสุด: {last_sync_str}</span>" if last_sync_str else ""
+    st.markdown(f"""
         <div class="pbi-bar">
             <span>OMNICHANNEL SALES DASHBOARD</span>
-            <span style="font-size: 14px; font-weight: normal; opacity: 0.9;">SHOPEE & LAZADA MULTI-SHOP</span>
+            <div style="display: flex; align-items: center; gap: 12px;">
+                {sync_badge}
+                <span style="font-size: 14px; font-weight: normal; opacity: 0.9;">SHOPEE & LAZADA MULTI-SHOP</span>
+            </div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -752,7 +785,7 @@ if check_password():
     # Wrapped in @st.fragment so table clicks rerun ONLY the dashboard content,
     # preventing full-page reloads, screen flickering, or jumping!
     @st.fragment
-    def render_interactive_dashboard(filtered_df):
+    def render_interactive_dashboard(filtered_df, active_stock_name=""):
         monthly_base = filtered_df.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index().sort_values('Month')
         cat_base = filtered_df.groupby('Category_Desc').agg({
             'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'
@@ -978,7 +1011,7 @@ if check_password():
                 column_config=col_config_day
             )
         with col_d2:
-            active_stock = st.session_state.get('active_stock_file_name', '')
+            active_stock = active_stock_name or st.session_state.get('active_stock_file_name', '')
             stock_badge = f" <span style='font-size:12px; color:#0099ff; font-weight:normal;'>(สต็อกอ้างอิง: {active_stock})</span>" if active_stock else ""
             st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
             st.dataframe(
@@ -988,4 +1021,4 @@ if check_password():
                 column_config=col_config_sku
             )
 
-    render_interactive_dashboard(filtered_df)
+    render_interactive_dashboard(filtered_df, active_stock_name)
