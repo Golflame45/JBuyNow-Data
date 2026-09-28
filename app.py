@@ -78,7 +78,7 @@ if check_password():
 
     def list_files_in_folder(service, folder_id):
         query = f"'{folder_id}' in parents and trashed = false"
-        results = service.files().list(q=query, fields="files(id, name, mimeType)").execute()
+        results = service.files().list(q=query, fields="files(id, name, mimeType, modifiedTime, createdTime)").execute()
         return results.get('files', [])
 
     def download_file_bytes(service, file_id):
@@ -427,6 +427,31 @@ if check_password():
         service = get_drive_service()
         master_df = pd.DataFrame()
 
+        def get_stock_file_sort_key(f, base_folder="."):
+            fname = f.get('name', '') if isinstance(f, dict) else str(f)
+            
+            # Point 1: Upload / Modified Timestamp
+            upload_time = ""
+            if isinstance(f, dict):
+                upload_time = f.get('modifiedTime', '') or f.get('createdTime', '')
+            else:
+                fpath = os.path.join(base_folder, fname) if not os.path.isabs(fname) else fname
+                if os.path.exists(fpath):
+                    try:
+                        upload_time = datetime.fromtimestamp(os.path.getmtime(fpath)).strftime('%Y-%m-%d %H:%M:%S')
+                    except Exception:
+                        pass
+
+            # Point 2: Date extracted from File Name
+            name_date = extract_date_from_name_or_content(fname)
+            if not name_date:
+                m = re.search(r'(\d{1,2})[-_.](\d{1,2})', fname)
+                if m:
+                    name_date = f"2026-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+
+            # Return dual-check sort key: (Upload Time, Date from Filename, Filename)
+            return (upload_time or "0000", name_date or "0000", fname)
+
         if service:
             master_files = list_files_in_folder(service, MASTER_FOLDER_ID)
             # Find Master Sales in Google Drive or local
@@ -487,8 +512,8 @@ if check_password():
                 except Exception:
                     pass
 
-            # Find Stock File if exists in 02_Master_Data (e.g. Stock as of 25.09)
-            stock_item = next((f for f in sorted(master_files, key=lambda x: x.get('name', ''), reverse=True) 
+            # Find Stock File if exists in 02_Master_Data (Smart Date-Sorted)
+            stock_item = next((f for f in sorted(master_files, key=get_stock_file_sort_key, reverse=True) 
                                if 'stock' in f['name'].lower() or 'inventory' in f['name'].lower()), None)
             if stock_item and not master_df.empty:
                 try:
@@ -508,6 +533,7 @@ if check_password():
                         stock_summary = stock_df.groupby('SKU')['Stock_Available'].sum().reset_index()
                         master_df = master_df.merge(stock_summary, on='SKU', how='left')
                         master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0)
+                        st.session_state['active_stock_file_name'] = stock_item.get('name', '')
                 except Exception:
                     pass
         else:
@@ -542,7 +568,7 @@ if check_password():
         if not master_df.empty and ('Stock_Available' not in master_df.columns or master_df['Stock_Available'].sum() == 0):
             for p in ['.', '..']:
                 if os.path.exists(p):
-                    for fn in sorted(os.listdir(p), reverse=True):
+                    for fn in sorted(os.listdir(p), key=lambda x: get_stock_file_sort_key(x, base_folder=p), reverse=True):
                         if 'stock' in fn.lower() and fn.endswith(('.xlsx', '.xls', '.csv')):
                             try:
                                 s_df = pd.read_csv(os.path.join(p, fn)) if fn.endswith('.csv') else pd.read_excel(os.path.join(p, fn))
@@ -557,6 +583,7 @@ if check_password():
                                         master_df = master_df.drop(columns=['Stock_Available'])
                                     master_df = master_df.merge(s_sum, on='SKU', how='left')
                                     master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0.0)
+                                    st.session_state['active_stock_file_name'] = fn
                                     break
                             except: pass
                     if 'Stock_Available' in master_df.columns and master_df['Stock_Available'].sum() > 0:
@@ -951,7 +978,9 @@ if check_password():
                 column_config=col_config_day
             )
         with col_d2:
-            st.write("**SKU Code (รายสินค้า)**")
+            active_stock = st.session_state.get('active_stock_file_name', '')
+            stock_badge = f" <span style='font-size:12px; color:#0099ff; font-weight:normal;'>(สต็อกอ้างอิง: {active_stock})</span>" if active_stock else ""
+            st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
             st.dataframe(
                 disp_sku[['SKU', 'Revenue', 'Stock_Available', 'A2C', 'Visitors', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold']], 
                 hide_index=True, use_container_width=True, height=380,
