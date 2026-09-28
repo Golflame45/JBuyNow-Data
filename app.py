@@ -742,14 +742,19 @@ if check_password():
                         break
 
         if not master_df.empty:
-            # Guarantee all numeric columns exist
-            for c in ['Revenue', 'Visitors', 'Buyers', 'Units_Sold', 'A2C', 'Orders']:
+            # Guarantee all numeric and essential columns exist
+            for c in ['Revenue', 'Visitors', 'Buyers', 'Units_Sold', 'A2C', 'Orders', 'Stock_Available']:
                 if c not in master_df.columns:
                     if c == 'Orders' and 'ทั้งหมด' in master_df.columns:
                         master_df['Orders'] = master_df['ทั้งหมด'].astype(str).str.replace(',', '').str.replace('-', '0').astype(float)
                     else:
                         master_df[c] = 0.0
                 master_df[c] = pd.to_numeric(master_df[c], errors='coerce').fillna(0.0)
+
+            if 'Product' not in master_df.columns:
+                master_df['Product'] = master_df['SKU']
+            else:
+                master_df['Product'] = master_df['Product'].fillna(master_df['SKU'])
 
             # Smart parsing: YYYY-MM-DD first (standard), then dayfirst=True fallback for DD/MM/YYYY
             def parse_date_series(s):
@@ -1009,14 +1014,17 @@ if check_password():
             else:
                 st.button("🔄 ล้างตัวกรอง (Reset)", use_container_width=True, disabled=True)
 
-        # 1. Order Month (Filtered by Cat, Day, SKU - but not Month itself)
+        # 1. Order Month (Macro time overview - preserved with full month list)
         df_for_month = filtered_df.copy()
         if selected_cats_table: df_for_month = df_for_month[df_for_month['Category_Desc'].isin(selected_cats_table)]
-        if selected_days: df_for_month = df_for_month[df_for_month['Day'].isin(selected_days)]
         if selected_skus: df_for_month = df_for_month[df_for_month['SKU'].isin(selected_skus)]
+        # Note: Do NOT filter df_for_month by selected_days to ensure Order Month never collapses to 1 row
         disp_monthly = df_for_month.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index()
-        disp_monthly = disp_monthly[(disp_monthly['Revenue'] > 0) | (disp_monthly['Visitors'] > 0)].sort_values('Month')
-        disp_monthly['% Rev'] = (disp_monthly['Revenue'] / disp_monthly['Revenue'].sum() * 100).fillna(0) if disp_monthly['Revenue'].sum() > 0 else 0
+        all_months_list = sorted(filtered_df['Month'].dropna().unique().tolist())
+        all_months_df = pd.DataFrame({'Month': all_months_list})
+        disp_monthly = all_months_df.merge(disp_monthly, on='Month', how='left').fillna({'Revenue': 0.0, 'Visitors': 0.0})
+        total_m_rev = disp_monthly['Revenue'].sum()
+        disp_monthly['% Rev'] = (disp_monthly['Revenue'] / total_m_rev * 100).fillna(0) if total_m_rev > 0 else 0.0
         st.session_state['tb_month_rendered_ids'] = disp_monthly['Month'].tolist()
 
         # 2. Product Group (Filtered by Month, Day, SKU - but not Cat itself)
@@ -1048,7 +1056,14 @@ if check_password():
         if selected_months: df_for_sku = df_for_sku[df_for_sku['Month'].isin(selected_months)]
         if selected_cats_table: df_for_sku = df_for_sku[df_for_sku['Category_Desc'].isin(selected_cats_table)]
         if selected_days: df_for_sku = df_for_sku[df_for_sku['Day'].isin(selected_days)]
+        
+        if 'Product' not in df_for_sku.columns:
+            df_for_sku['Product'] = df_for_sku['SKU']
+        else:
+            df_for_sku['Product'] = df_for_sku['Product'].fillna(df_for_sku['SKU'])
+
         disp_sku = df_for_sku.groupby('SKU').agg({
+            'Product': 'first',
             'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum',
             'Stock_Available': 'first'
         }).reset_index()
@@ -1086,15 +1101,16 @@ if check_password():
         }
 
         col_config_sku = {
-            "SKU": st.column_config.TextColumn("SKU Code", width="large"),
+            "SKU": st.column_config.TextColumn("SKU Code", width="medium"),
+            "Product": st.column_config.TextColumn("ชื่อสินค้า (Description)", width="large"),
             "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f", width="medium"),
-            "Stock_Available": st.column_config.NumberColumn("Stock", format="%d ชิ้น", width="small"),
-            "A2C": st.column_config.NumberColumn("A2C", format="%,d", width="small"),
             "Visitors": st.column_config.NumberColumn("Visitors", format="%,d", width="small"),
+            "A2C": st.column_config.NumberColumn("A2C", format="%,d", width="small"),
             "Avg CR": st.column_config.NumberColumn("Avg CR", format="%.2f %%", width="small"),
             "Avg Price": st.column_config.NumberColumn("Avg Price", format="%,.2f", width="small"),
             "Buyers": st.column_config.NumberColumn("Buyers", format="%,d", width="small"),
-            "Units_Sold": st.column_config.NumberColumn("Units", format="%,d", width="small")
+            "Units_Sold": st.column_config.NumberColumn("Units", format="%,d", width="small"),
+            "Stock_Available": st.column_config.NumberColumn("Stock", format="%d ชิ้น", width="small")
         }
 
         # Middle Row (Fixed height 320px for perfect alignment & zero layout jump)
@@ -1161,8 +1177,28 @@ if check_password():
 
             sku_counts = df_tree.groupby('Parent_ID')['SKU'].nunique()
 
+            def get_common_prefix(strings):
+                valid = [str(s).strip() for s in strings if str(s).strip() not in ['-', '', 'nan', 'None'] and not str(s).strip().startswith('PID-')]
+                if not valid: return ""
+                import os
+                cp = os.path.commonprefix(valid)
+                return cp.rstrip('-_./ ')
+
+            parent_sku_dict = {}
+            for pid, group in df_tree.groupby('Parent_ID'):
+                skus = [str(s).strip() for s in group['SKU'].dropna().unique() 
+                        if str(s).strip() not in ['', '-', 'nan', 'None'] and not str(s).strip().startswith('PID-')]
+                if not skus:
+                    parent_sku_dict[pid] = str(pid)
+                elif len(skus) == 1:
+                    parent_sku_dict[pid] = skus[0]
+                else:
+                    cp = get_common_prefix(skus)
+                    parent_sku_dict[pid] = cp if len(cp) >= 2 else skus[0]
+
             # Parent aggregation
-            parent_df = df_tree.groupby(['Parent_ID', 'Product']).agg({
+            parent_df = df_tree.groupby('Parent_ID').agg({
+                'Product': 'first',
                 'Revenue': 'sum',
                 'Visitors': 'sum',
                 'A2C': 'sum',
@@ -1172,6 +1208,7 @@ if check_password():
                 'SKU': 'first'
             }).reset_index()
 
+            parent_df['Parent_SKU_Display'] = parent_df['Parent_ID'].map(parent_sku_dict).fillna(parent_df['SKU'])
             parent_df['variant_count'] = parent_df['Parent_ID'].map(sku_counts).fillna(1).astype(int)
             parent_df['is_multi'] = parent_df['variant_count'] > 1
             parent_df = parent_df.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
@@ -1197,7 +1234,11 @@ if check_password():
             if st_clean:
                 for _, row in parent_df.iterrows():
                     pid = row['Parent_ID']
-                    if st_clean in str(row['Product']).lower() or st_clean in str(row['SKU']).lower() or st_clean in str(pid).lower():
+                    p_disp_sku = str(row.get('Parent_SKU_Display', '')).lower()
+                    if (st_clean in str(row['Product']).lower() or 
+                        st_clean in str(row['SKU']).lower() or 
+                        st_clean in str(pid).lower() or 
+                        st_clean in p_disp_sku):
                         matching_pids.add(pid)
                 for pid, children in variants_dict.items():
                     if any(st_clean in str(c_sku).lower() for c_sku in children['SKU']):
@@ -1215,6 +1256,7 @@ if check_password():
             for _, row in parent_df.iterrows():
                 pid = str(row['Parent_ID'])
                 pname = html_lib.escape(str(row['Product']))
+                seller_sku_p = html_lib.escape(str(row.get('Parent_SKU_Display', row['SKU'])))
                 rev_val = row['Revenue']
                 vis_val = row['Visitors']
                 a2c_val = row['A2C']
@@ -1255,6 +1297,7 @@ if check_password():
                         <summary class="row">
                           <div class="col col-prod">
                             <span class="badge">[+] {row['variant_count']} ตัวเลือก</span>
+                            <span class="parent-sku-tag">{seller_sku_p}</span>
                             <span class="pname" title="{pname}">{pname}</span>
                           </div>
                           <div class="col col-rev">{rev_val:,.0f}</div>
@@ -1270,7 +1313,7 @@ if check_password():
                     </div>
                     """)
                 else:
-                    s_sku = html_lib.escape(str(row['SKU']))
+                    s_sku = seller_sku_p
                     rows_html.append(f"""
                     <div class="row standalone-row">
                       <div class="col col-prod">
@@ -1305,6 +1348,9 @@ if check_password():
     --badge-bg: rgba(56, 189, 248, 0.15);
     --badge-text: #38bdf8;
     --badge-border: rgba(56, 189, 248, 0.35);
+    --parent-sku-text: #38bdf8;
+    --parent-sku-bg: rgba(56, 189, 248, 0.1);
+    --parent-sku-border: rgba(56, 189, 248, 0.25);
     --sku-text: #38bdf8;
   }}
   @media (prefers-color-scheme: light) {{
@@ -1321,6 +1367,9 @@ if check_password():
       --badge-bg: #e0f2fe;
       --badge-text: #0284c7;
       --badge-border: #bae6fd;
+      --parent-sku-text: #0284c7;
+      --parent-sku-bg: #f0f9ff;
+      --parent-sku-border: #bae6fd;
       --sku-text: #0284c7;
     }}
   }}
@@ -1399,6 +1448,17 @@ if check_password():
     font-weight: 600;
     flex-shrink: 0;
   }}
+  .parent-sku-tag {{
+    font-family: ui-monospace, monospace;
+    font-weight: 700;
+    font-size: 11px;
+    color: var(--parent-sku-text);
+    background: var(--parent-sku-bg);
+    border: 1px solid var(--parent-sku-border);
+    padding: 2px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+  }}
   .pname {{
     white-space: nowrap;
     overflow: hidden;
@@ -1453,7 +1513,7 @@ if check_password():
                 # 100% Classic Direct SKU Data Grid for Lazada
                 st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
                 st.dataframe(
-                    disp_sku[['SKU', 'Revenue', 'Visitors', 'A2C', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
+                    disp_sku[['SKU', 'Product', 'Revenue', 'Visitors', 'A2C', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
                     hide_index=True, use_container_width=True, height=380,
                     on_select="rerun", selection_mode="multi-row", key="tb_sku",
                     column_config=col_config_sku
@@ -1485,7 +1545,7 @@ if check_password():
                 with tab_grid:
                     st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
                     st.dataframe(
-                        disp_sku[['SKU', 'Revenue', 'Visitors', 'A2C', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
+                        disp_sku[['SKU', 'Product', 'Revenue', 'Visitors', 'A2C', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
                         hide_index=True, use_container_width=True, height=340,
                         on_select="rerun", selection_mode="multi-row", key="tb_sku",
                         column_config=col_config_sku
