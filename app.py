@@ -1150,7 +1150,7 @@ if check_password():
             df_tree = df_input.copy()
             if 'Parent_SKU' in df_tree.columns:
                 p_id = df_tree['Parent_SKU'].astype(str).str.strip().replace({'nan': '-', 'None': '-', '': '-'})
-                df_tree['Parent_ID'] = np.where((p_id == '-') | (p_id == ''), df_tree['SKU'], p_id)
+                df_tree['Parent_ID'] = np.where((p_id == '-') | (p_id == '') | (df_tree['Platform'] == 'Lazada'), df_tree['SKU'], p_id)
             else:
                 df_tree['Parent_ID'] = df_tree['SKU']
 
@@ -1165,9 +1165,9 @@ if check_password():
             parent_df = df_tree.groupby(['Parent_ID', 'Product']).agg({
                 'Revenue': 'sum',
                 'Visitors': 'sum',
-                'Buyers': 'sum',
-                'Units_Sold': 'sum',
                 'A2C': 'sum',
+                'Units_Sold': 'sum',
+                'Buyers': 'sum',
                 'Stock_Available': 'sum',
                 'SKU': 'first'
             }).reset_index()
@@ -1182,9 +1182,9 @@ if check_password():
                 multi_rows = df_tree[df_tree['Parent_ID'].isin(multi_pids)]
                 child_agg = multi_rows.groupby(['Parent_ID', 'SKU']).agg({
                     'Revenue': 'sum',
-                    'Buyers': 'sum',
-                    'Units_Sold': 'sum',
                     'A2C': 'sum',
+                    'Units_Sold': 'sum',
+                    'Buyers': 'sum',
                     'Stock_Available': 'sum'
                 }).reset_index().sort_values('Revenue', ascending=False)
                 for pid, group in child_agg.groupby('Parent_ID'):
@@ -1217,12 +1217,12 @@ if check_password():
                 pname = html_lib.escape(str(row['Product']))
                 rev_val = row['Revenue']
                 vis_val = row['Visitors']
+                a2c_val = row['A2C']
                 unit_val = row['Units_Sold']
                 stock_val = row['Stock_Available']
-                a2c_val = row['A2C']
+                stock_color = "#22c55e" if stock_val > 0 else "#ef4444"
 
                 has_children = row['is_multi'] and pid in variants_dict
-                stock_color = "#22c55e" if stock_val > 0 else "#ef4444"
 
                 if has_children:
                     children = variants_dict[pid]
@@ -1230,79 +1230,59 @@ if check_password():
                     for _, c in children.iterrows():
                         c_sku = html_lib.escape(str(c['SKU']))
                         c_rev = c['Revenue']
+                        c_a2c = c['A2C']
                         c_unit = c['Units_Sold']
                         c_stock = c['Stock_Available']
-                        c_a2c = c['A2C']
                         c_stock_color = "#22c55e" if c_stock > 0 else "#ef4444"
 
                         var_rows.append(f"""
-                        <tr class="var-row">
-                          <td style="padding: 6px 8px 6px 28px;">
-                            <span class="sku-tag">{c_sku}</span>
-                          </td>
-                          <td style="padding: 6px 8px; text-align: right; font-weight: 500;">{c_rev:,.0f}</td>
-                          <td style="padding: 6px 8px; text-align: right; color: var(--text-dim);">-</td>
-                          <td style="padding: 6px 8px; text-align: right;">{c_unit:,.0f}</td>
-                          <td style="padding: 6px 8px; text-align: right; color: {c_stock_color}; font-weight: 500;">{c_stock:,.0f}</td>
-                          <td style="padding: 6px 12px 6px 8px; text-align: right; color: var(--text-muted);">{c_a2c:,.0f}</td>
-                        </tr>
+                        <div class="row child-row">
+                          <div class="col col-prod"><span class="sku-tag">↳ {c_sku}</span></div>
+                          <div class="col col-rev">{c_rev:,.0f}</div>
+                          <div class="col col-vis" style="color: var(--text-dim);">-</div>
+                          <div class="col col-a2c">{c_a2c:,.0f}</div>
+                          <div class="col col-unit">{c_unit:,.0f}</div>
+                          <div class="col col-stock" style="color: {c_stock_color};">{c_stock:,.0f}</div>
+                        </div>
                         """)
 
-                    children_table = "".join(var_rows)
+                    child_html = "".join(var_rows)
                     is_open = 'open' if pid in open_pids else ''
 
                     rows_html.append(f"""
-                    <tr class="parent-row">
-                      <td colspan="6" style="padding: 0;">
-                        <details {is_open} style="width: 100%;">
-                          <summary>
-                            <div style="display: flex; align-items: center; gap: 8px; width: 44%; overflow: hidden;">
-                              <span class="badge">[+] {row['variant_count']} ตัวเลือก</span>
-                              <span class="pname" title="{pname}">{pname}</span>
-                            </div>
-                            <div style="text-align: right; width: 14%; font-weight: bold; font-size: 13px;">{rev_val:,.0f}</div>
-                            <div style="text-align: right; width: 10%; font-size: 13px; color: var(--text-muted);">{vis_val:,.0f}</div>
-                            <div style="text-align: right; width: 10%; font-size: 13px; color: var(--text-muted);">{unit_val:,.0f}</div>
-                            <div style="text-align: right; width: 10%; color: {stock_color}; font-weight: bold; font-size: 13px;">{stock_val:,.0f}</div>
-                            <div style="text-align: right; width: 12%; color: var(--text-muted); padding-right: 12px; font-size: 13px;">{a2c_val:,.0f}</div>
-                          </summary>
-                          <div class="child-container">
-                            <table class="child-table">
-                              <thead>
-                                <tr>
-                                  <th style="padding: 4px 8px 4px 28px; text-align: left; width: 44%;">↳ ตัวเลือกย่อย (Variant SKU)</th>
-                                  <th style="padding: 4px 8px; text-align: right; width: 14%;">ยอดขาย (฿)</th>
-                                  <th style="padding: 4px 8px; text-align: right; width: 10%;">คนเข้าชม</th>
-                                  <th style="padding: 4px 8px; text-align: right; width: 10%;">ชิ้นที่ขาย</th>
-                                  <th style="padding: 4px 8px; text-align: right; width: 10%;">สต็อก</th>
-                                  <th style="padding: 4px 12px 4px 8px; text-align: right; width: 12%;">ตะกร้า</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {children_table}
-                              </tbody>
-                            </table>
+                    <div class="parent-item">
+                      <details {is_open}>
+                        <summary class="row">
+                          <div class="col col-prod">
+                            <span class="badge">[+] {row['variant_count']} ตัวเลือก</span>
+                            <span class="pname" title="{pname}">{pname}</span>
                           </div>
-                        </details>
-                      </td>
-                    </tr>
+                          <div class="col col-rev">{rev_val:,.0f}</div>
+                          <div class="col col-vis">{vis_val:,.0f}</div>
+                          <div class="col col-a2c">{a2c_val:,.0f}</div>
+                          <div class="col col-unit">{unit_val:,.0f}</div>
+                          <div class="col col-stock" style="color: {stock_color};">{stock_val:,.0f}</div>
+                        </summary>
+                        <div class="child-container">
+                          {child_html}
+                        </div>
+                      </details>
+                    </div>
                     """)
                 else:
                     s_sku = html_lib.escape(str(row['SKU']))
                     rows_html.append(f"""
-                    <tr class="parent-row">
-                      <td style="padding: 8px 10px; width: 44%;">
-                        <div style="display: flex; align-items: center; gap: 8px; overflow: hidden;">
-                          <span class="single-sku">{s_sku}</span>
-                          <span class="pname-single" title="{pname}">{pname}</span>
-                        </div>
-                      </td>
-                      <td style="padding: 8px; text-align: right; font-weight: bold; width: 14%; font-size: 13px;">{rev_val:,.0f}</td>
-                      <td style="padding: 8px; text-align: right; width: 10%; font-size: 13px; color: var(--text-muted);">{vis_val:,.0f}</td>
-                      <td style="padding: 8px; text-align: right; width: 10%; font-size: 13px; color: var(--text-muted);">{unit_val:,.0f}</td>
-                      <td style="padding: 8px; text-align: right; color: {stock_color}; font-weight: bold; width: 10%; font-size: 13px;">{stock_val:,.0f}</td>
-                      <td style="padding: 8px 12px 8px 8px; text-align: right; color: var(--text-muted); width: 12%; font-size: 13px;">{a2c_val:,.0f}</td>
-                    </tr>
+                    <div class="row standalone-row">
+                      <div class="col col-prod">
+                        <span class="single-sku">{s_sku}</span>
+                        <span class="pname-single" title="{pname}">{pname}</span>
+                      </div>
+                      <div class="col col-rev">{rev_val:,.0f}</div>
+                      <div class="col col-vis">{vis_val:,.0f}</div>
+                      <div class="col col-a2c">{a2c_val:,.0f}</div>
+                      <div class="col col-unit">{unit_val:,.0f}</div>
+                      <div class="col col-stock" style="color: {stock_color};">{stock_val:,.0f}</div>
+                    </div>
                     """)
 
             all_rows = "".join(rows_html)
@@ -1313,7 +1293,6 @@ if check_password():
 <meta charset="utf-8">
 <style>
   :root {{
-    --bg: #0e1117;
     --bg-card: #131720;
     --bg-header: #1a1f2c;
     --bg-hover: #1e2433;
@@ -1330,7 +1309,6 @@ if check_password():
   }}
   @media (prefers-color-scheme: light) {{
     :root {{
-      --bg: #ffffff;
       --bg-card: #ffffff;
       --bg-header: #f8f9fa;
       --bg-hover: #f1f5f9;
@@ -1346,73 +1324,71 @@ if check_password():
       --sku-text: #0284c7;
     }}
   }}
-  * {{
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   body {{
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: transparent;
     color: var(--text);
     overflow: hidden;
   }}
-  .table-container {{
+  .container {{
     height: 330px;
     overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--bg-card);
   }}
-  .table-container::-webkit-scrollbar {{
-    width: 6px;
-    height: 6px;
-  }}
-  .table-container::-webkit-scrollbar-track {{
-    background: transparent;
-  }}
-  .table-container::-webkit-scrollbar-thumb {{
-    background: var(--border);
-    border-radius: 3px;
-  }}
-  table {{
+  .container::-webkit-scrollbar {{ width: 6px; height: 6px; }}
+  .container::-webkit-scrollbar-track {{ background: transparent; }}
+  .container::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 3px; }}
+
+  .row {{
+    display: flex;
+    align-items: center;
     width: 100%;
-    border-collapse: collapse;
     font-size: 13px;
+    border-bottom: 1px solid var(--border);
   }}
-  thead tr {{
+  .header-row {{
     background: var(--bg-header);
     position: sticky;
     top: 0;
     z-index: 10;
-    border-bottom: 1px solid var(--border);
-  }}
-  th {{
-    padding: 8px 10px;
     font-weight: 600;
     font-size: 12px;
     color: var(--text-muted);
   }}
-  .parent-row {{
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-card);
-  }}
-  .parent-row:hover {{
-    background: var(--bg-hover);
-  }}
-  summary {{
-    padding: 8px 10px;
+  .parent-item summary {{
     cursor: pointer;
-    font-weight: 600;
     list-style: none;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
     user-select: none;
   }}
-  summary::-webkit-details-marker {{
-    display: none;
+  .parent-item summary::-webkit-details-marker {{ display: none; }}
+  .parent-item summary:hover, .standalone-row:hover, .child-row:hover {{
+    background: var(--bg-hover);
   }}
+
+  /* Laser-aligned Flexbox Columns: 38% + 14% + 12% + 12% + 11% + 13% = 100% */
+  .col-prod  {{ width: 38%; padding: 8px 10px; text-align: left; overflow: hidden; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }}
+  .col-rev   {{ width: 14%; padding: 8px 8px; text-align: right; font-weight: bold; flex-shrink: 0; }}
+  .col-vis   {{ width: 12%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
+  .col-a2c   {{ width: 12%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
+  .col-unit  {{ width: 11%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
+  .col-stock {{ width: 13%; padding: 8px 14px 8px 8px; text-align: right; font-weight: bold; flex-shrink: 0; }}
+
+  .child-container {{
+    background: var(--bg-child);
+    border-top: 1px dashed var(--border-dashed);
+    border-bottom: 1px solid var(--border);
+  }}
+  .child-row {{
+    font-size: 12px;
+    border-bottom: 1px solid var(--border);
+  }}
+  .child-row:last-child {{ border-bottom: none; }}
+  .child-row .col-prod {{ padding-left: 28px; }}
+  .child-row .col-rev {{ font-weight: 500; }}
+
   .badge {{
     font-size: 11px;
     background: var(--badge-bg);
@@ -1438,62 +1414,31 @@ if check_password():
     color: var(--text-muted);
   }}
   .single-sku {{
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-family: ui-monospace, monospace;
     font-weight: 600;
     font-size: 13px;
     color: var(--text);
     flex-shrink: 0;
   }}
   .sku-tag {{
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-family: ui-monospace, monospace;
     font-weight: 600;
     color: var(--sku-text);
-  }}
-  .child-container {{
-    background: var(--bg-child);
-    padding: 4px 10px 8px 10px;
-    border-top: 1px dashed var(--border-dashed);
-    border-bottom: 1px solid var(--border);
-  }}
-  .child-table {{
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 12px;
-  }}
-  .child-table th {{
-    font-size: 11px;
-    color: var(--text-dim);
-    border-bottom: 1px solid var(--border);
-  }}
-  .var-row {{
-    border-bottom: 1px solid var(--border);
-  }}
-  .var-row:last-child {{
-    border-bottom: none;
-  }}
-  .var-row:hover {{
-    background: var(--bg-hover);
   }}
 </style>
 </head>
 <body>
-  <div class="table-container">
-    <table>
-      <thead>
-        <tr>
-          <th style="text-align: left; width: 44%;">สินค้า / รหัส SKU</th>
-          <th style="text-align: right; width: 14%;">ยอดขาย (฿)</th>
-          <th style="text-align: right; width: 10%;">คนเข้าชม</th>
-          <th style="text-align: right; width: 10%;">ชิ้นที่ขาย</th>
-          <th style="text-align: right; width: 10%;">สต็อก</th>
-          <th style="text-align: right; width: 12%; padding-right: 12px;">ตะกร้า</th>
-        </tr>
-      </thead>
-      <tbody>
-        {all_rows}
-      </tbody>
-    </table>
+<div class="container">
+  <div class="row header-row">
+    <div class="col-prod">สินค้า / รหัส SKU</div>
+    <div class="col-rev">ยอดขาย (฿)</div>
+    <div class="col-vis">คนเข้าชม</div>
+    <div class="col-a2c">ตะกร้า (A2C)</div>
+    <div class="col-unit">ชิ้นที่ขาย</div>
+    <div class="col-stock">สต็อก</div>
   </div>
+  {all_rows}
+</div>
 </body>
 </html>"""
             return full_html, is_truncated, total_parents
@@ -1502,36 +1447,48 @@ if check_password():
             active_stock = active_stock_name or st.session_state.get('active_stock_file_name', '')
             stock_badge = f" <span style='font-size:12px; color:#0099ff; font-weight:normal;'>(สต็อกอ้างอิง: {active_stock})</span>" if active_stock else ""
             
-            tab_tree, tab_grid = st.tabs([
-                "🌳 เจาะลึก Parent & Variants (Tree View)", 
-                "📋 ตารางสรุปราย SKU (Data Grid)"
-            ])
-            
-            with tab_tree:
-                col_t_search, col_t_badge = st.columns([2, 1])
-                with col_t_search:
-                    tree_search = st.text_input(
-                        "ค้นหาตามชื่อสินค้า / รหัส SKU", 
-                        key="tree_search_term", 
-                        placeholder="🔍 พิมพ์ชื่อสินค้า หรือ รหัส SKU เพื่อค้นหา...", 
-                        label_visibility="collapsed"
-                    )
-                with col_t_badge:
-                    if active_stock:
-                        st.markdown(f"<div style='text-align:right; font-size:12px; color:#0099ff; padding-top:6px;'>📦 สต็อก: {active_stock}</div>", unsafe_allow_html=True)
-                
-                tree_html, is_trunc, total_p = render_tree_view_html(df_for_sku, tree_search)
-                components.html(tree_html, height=335)
-                if is_trunc:
-                    st.caption(f"* แสดง 100 อันดับแรกจากทั้งหมด {total_p:,} สินค้า (พิมพ์ค้นหาในช่องด้านบนเพื่อดูสินค้าอื่นเพิ่มเติม)")
-                
-            with tab_grid:
+            is_lazada_only = (filtered_df['Platform'].nunique() == 1 and filtered_df['Platform'].iloc[0] == 'Lazada')
+
+            if is_lazada_only:
+                # 100% Classic Direct SKU Data Grid for Lazada
                 st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
                 st.dataframe(
-                    disp_sku[['SKU', 'Revenue', 'Stock_Available', 'A2C', 'Visitors', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold']], 
-                    hide_index=True, use_container_width=True, height=340,
+                    disp_sku[['SKU', 'Revenue', 'Visitors', 'A2C', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
+                    hide_index=True, use_container_width=True, height=380,
                     on_select="rerun", selection_mode="multi-row", key="tb_sku",
                     column_config=col_config_sku
                 )
+            else:
+                tab_tree, tab_grid = st.tabs([
+                    "🌳 เจาะลึก Parent & Variants (Tree View)", 
+                    "📋 ตารางสรุปราย SKU (Data Grid)"
+                ])
+                
+                with tab_tree:
+                    col_t_search, col_t_badge = st.columns([2, 1])
+                    with col_t_search:
+                        tree_search = st.text_input(
+                            "ค้นหาตามชื่อสินค้า / รหัส SKU", 
+                            key="tree_search_term", 
+                            placeholder="🔍 พิมพ์ชื่อสินค้า หรือ รหัส SKU เพื่อค้นหา...", 
+                            label_visibility="collapsed"
+                        )
+                    with col_t_badge:
+                        if active_stock:
+                            st.markdown(f"<div style='text-align:right; font-size:12px; color:#0099ff; padding-top:6px;'>📦 สต็อก: {active_stock}</div>", unsafe_allow_html=True)
+                    
+                    tree_html, is_trunc, total_p = render_tree_view_html(df_for_sku, tree_search)
+                    components.html(tree_html, height=335)
+                    if is_trunc:
+                        st.caption(f"* แสดง 100 อันดับแรกจากทั้งหมด {total_p:,} สินค้า (พิมพ์ค้นหาในช่องด้านบนเพื่อดูสินค้าอื่นเพิ่มเติม)")
+                    
+                with tab_grid:
+                    st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
+                    st.dataframe(
+                        disp_sku[['SKU', 'Revenue', 'Visitors', 'A2C', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
+                        hide_index=True, use_container_width=True, height=340,
+                        on_select="rerun", selection_mode="multi-row", key="tb_sku",
+                        column_config=col_config_sku
+                    )
 
     render_interactive_dashboard(filtered_df, active_stock_name)
