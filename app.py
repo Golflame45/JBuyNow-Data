@@ -734,6 +734,7 @@ if check_password():
         cat_base['Avg Price'] = (cat_base['Revenue'] / cat_base['Units_Sold']).fillna(0)
 
         daily_base = filtered_df.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index().sort_values('DateObj')
+        daily_base['Date'] = pd.to_datetime(daily_base['DateObj']).dt.date
         sku_base = filtered_df.groupby('SKU').agg({
             'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum',
             'Stock_Available': 'first'
@@ -847,6 +848,7 @@ if check_password():
         if selected_skus: df_for_day = df_for_day[df_for_day['SKU'].isin(selected_skus)]
         disp_daily = df_for_day.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index()
         disp_daily = disp_daily[(disp_daily['Revenue'] > 0) | (disp_daily['Visitors'] > 0)].sort_values('DateObj')
+        disp_daily['Date'] = pd.to_datetime(disp_daily['DateObj']).dt.date
         st.session_state['tb_day_rendered_ids'] = disp_daily['Day'].tolist()
 
         # 4. SKU Code (Filtered by Month, Cat, Day - but not SKU itself)
@@ -884,7 +886,7 @@ if check_password():
         }
 
         col_config_day = {
-            "Day": st.column_config.TextColumn("Day", width="medium"),
+            "Date": st.column_config.DateColumn("Date (วันที่)", format="DD/MM/YYYY", width="medium"),
             "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f", width="medium"),
             "Visitors": st.column_config.NumberColumn("Visitors", format="%,d", width="small"),
             "Buyers": st.column_config.NumberColumn("Buyers", format="%,d", width="small"),
@@ -943,7 +945,7 @@ if check_password():
         with col_d1:
             st.write("**Order Date (รายวัน)**")
             st.dataframe(
-                disp_daily[['Day', 'Revenue', 'Visitors', 'Buyers', 'Units_Sold']], 
+                disp_daily[['Date', 'Revenue', 'Visitors', 'Buyers', 'Units_Sold']], 
                 hide_index=True, use_container_width=True, height=380,
                 on_select="rerun", selection_mode="multi-row", key="tb_day",
                 column_config=col_config_day
