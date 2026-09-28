@@ -5,7 +5,31 @@ import io
 import os
 import re
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# Thai Timezone (UTC+7)
+BKK_TZ = timezone(timedelta(hours=7))
+
+def format_bkk_time(val):
+    if not val:
+        return ""
+    try:
+        if isinstance(val, (int, float)):
+            dt = datetime.fromtimestamp(val, tz=timezone.utc).astimezone(BKK_TZ)
+            return dt.strftime('%d/%m/%Y %H:%M น.')
+        elif isinstance(val, str):
+            dt = pd.to_datetime(val)
+            if dt.tzinfo is None:
+                dt = dt.tz_localize('UTC')
+            dt_bkk = dt.tz_convert(BKK_TZ)
+            return dt_bkk.strftime('%d/%m/%Y %H:%M น.')
+        elif isinstance(val, datetime):
+            if val.tzinfo is None:
+                val = val.replace(tzinfo=timezone.utc)
+            return val.astimezone(BKK_TZ).strftime('%d/%m/%Y %H:%M น.')
+    except Exception:
+        pass
+    return ""
 
 # Google Drive API Libraries
 try:
@@ -463,16 +487,11 @@ if check_password():
                 master_df = pd.read_csv(fh)
                 raw_mtime = m_item.get('modifiedTime', '')
                 if raw_mtime:
-                    try:
-                        dt_utc = pd.to_datetime(raw_mtime)
-                        dt_bkk = dt_utc.tz_convert('Asia/Bangkok') if dt_utc.tzinfo else dt_utc.tz_localize('UTC').tz_convert('Asia/Bangkok')
-                        last_sync_str = dt_bkk.strftime('%d/%m/%Y %H:%M น.')
-                    except Exception:
-                        pass
+                    last_sync_str = format_bkk_time(raw_mtime)
             elif os.path.exists('Master_Sales_Full.csv'):
                 master_df = pd.read_csv('Master_Sales_Full.csv')
                 try:
-                    last_sync_str = datetime.fromtimestamp(os.path.getmtime('Master_Sales_Full.csv')).strftime('%d/%m/%Y %H:%M น.')
+                    last_sync_str = format_bkk_time(os.path.getmtime('Master_Sales_Full.csv'))
                 except Exception:
                     pass
 
@@ -556,7 +575,7 @@ if check_password():
             if os.path.exists('Master_Sales_Full.csv'):
                 master_df = pd.read_csv('Master_Sales_Full.csv')
                 try:
-                    last_sync_str = datetime.fromtimestamp(os.path.getmtime('Master_Sales_Full.csv')).strftime('%d/%m/%Y %H:%M น.')
+                    last_sync_str = format_bkk_time(os.path.getmtime('Master_Sales_Full.csv'))
                 except Exception:
                     pass
 
