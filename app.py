@@ -557,8 +557,8 @@ if check_password():
         return "ซิงก์สำเร็จ", files_processed_count
 
     # ================= 4. Load Master & SKU Master Data =================
-    @st.cache_data(ttl=86400)
-    def load_active_data():
+    @st.cache_data(ttl=300)
+    def load_active_data(file_mtime=0):
         service = get_drive_service()
         master_df = pd.DataFrame()
         active_stock_name = ""
@@ -792,7 +792,8 @@ if check_password():
 
         return master_df, active_stock_name, last_sync_str
 
-    base_df, active_stock_name, last_sync_str = load_active_data()
+    local_master_mtime = os.path.getmtime('Master_Sales_Full.csv') if os.path.exists('Master_Sales_Full.csv') else 0
+    base_df, active_stock_name, last_sync_str = load_active_data(local_master_mtime)
     st.session_state['active_stock_file_name'] = active_stock_name
     st.session_state['last_sync_time_str'] = last_sync_str
 
