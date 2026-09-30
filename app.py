@@ -490,7 +490,7 @@ if check_password():
         return clean_df
 
     # ================= 3. Automated Ingestion Pipeline =================
-    def sync_google_drive_pipeline(service):
+    def sync_google_drive_pipeline(service, force_rebuild=False):
         if not service:
             return "ไม่สามารถเชื่อมต่อ Google Drive API ได้ (กรุณาเช็ค Secrets)", 0
 
@@ -498,9 +498,11 @@ if check_password():
         master_files = list_files_in_folder(service, MASTER_FOLDER_ID)
         master_file_item = next((f for f in master_files if f['name'] == 'Master_Sales_Full.csv'), None)
         
-        if master_file_item:
+        if master_file_item and not force_rebuild:
             fh = download_file_bytes(service, master_file_item['id'])
-            master_df = pd.read_csv(fh)
+            master_df = pd.read_csv(fh, low_memory=False)
+        elif os.path.exists('Master_Sales_Full.csv') and not force_rebuild:
+            master_df = pd.read_csv('Master_Sales_Full.csv', low_memory=False)
         else:
             master_df = pd.DataFrame()
 
@@ -510,14 +512,14 @@ if check_password():
         files_processed_count = 0
 
         existing_combos = set()
-        if not master_df.empty and 'Date' in master_df.columns and 'Platform' in master_df.columns:
+        if not force_rebuild and not master_df.empty and 'Date' in master_df.columns and 'Platform' in master_df.columns:
             existing_combos = set(zip(master_df['Platform'].astype(str), master_df['Date'].astype(str)))
 
         for fid, fname, fpath in all_inbox_files:
             date_cand = extract_date_from_name_or_content(fname)
-            plat_cand = "Lazada" if "lazada" in fpath.lower() else "Shopee"
-            # Skip downloading if already present in master
-            if existing_combos and date_cand and (plat_cand, date_cand) in existing_combos:
+            plat_cand = "Lazada" if ("lazada" in fpath.lower() or "laz" in fpath.lower() or "lazada" in fname.lower()) else "Shopee"
+            # Skip downloading if already present in master and not force rebuilding
+            if not force_rebuild and existing_combos and date_cand and (plat_cand, date_cand) in existing_combos:
                 continue
 
             try:
@@ -529,18 +531,44 @@ if check_password():
             except Exception:
                 pass
 
-        # Step 3: Append, Deduplicate, and Save back to 02_Master_Data
+        # Step 3: Clean Aggregation & Deterministic Replace (NEVER drop with keep='last')
         if new_dfs:
             combined_new = pd.concat(new_dfs, ignore_index=True)
-            if not master_df.empty:
-                full_df = pd.concat([master_df, combined_new], ignore_index=True)
+            
+            # Aggregate multiple listings of the same SKU on the same date within incoming files
+            agg_dict = {
+                'Revenue': 'sum',
+                'Visitors': 'sum',
+                'Buyers': 'sum',
+                'Units_Sold': 'sum',
+                'A2C': 'sum',
+                'Orders': 'sum',
+                'Parent_SKU': 'first',
+                'Product': 'first'
+            }
+            combined_new = combined_new.sort_values('Revenue', ascending=False)
+            combined_new = combined_new.groupby(['Platform', 'Shop_Name', 'Date', 'SKU'], as_index=False).agg(agg_dict)
+
+            if not master_df.empty and not force_rebuild:
+                # Replace existing dates with newly parsed clean dates
+                new_combos = set(zip(combined_new['Platform'].astype(str), combined_new['Date'].astype(str)))
+                mask_retain = ~master_df.apply(lambda r: (str(r['Platform']), str(r['Date'])) in new_combos, axis=1)
+                full_df = pd.concat([master_df[mask_retain], combined_new], ignore_index=True)
             else:
                 full_df = combined_new
-            
-            # Deduplicate by Platform, Shop_Name, Date, SKU
-            full_df = full_df.drop_duplicates(subset=['Platform', 'Shop_Name', 'Date', 'SKU'], keep='last')
-            
-            # Attempt saving back to Google Drive (if quota permits)
+
+            # Sort deterministically
+            full_df = full_df.sort_values(['Date', 'Platform', 'Shop_Name', 'Revenue'], ascending=[True, True, True, False]).reset_index(drop=True)
+
+            # Save locally
+            try:
+                base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else '.'
+                local_csv_path = os.path.join(base_dir, 'Master_Sales_Full.csv')
+                full_df.to_csv(local_csv_path, index=False, encoding='utf-8-sig')
+            except Exception:
+                pass
+
+            # Save to Google Drive
             try:
                 csv_buf = io.BytesIO()
                 full_df.to_csv(csv_buf, index=False, encoding='utf-8-sig')
@@ -589,56 +617,32 @@ if check_password():
             # Return dual-check sort key: (Upload Time, Date from Filename, Filename)
             return (upload_time or "0000", name_date or "0000", fname)
 
+        base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else '.'
+        local_csv_path = os.path.join(base_dir, 'Master_Sales_Full.csv')
+
         if service:
             master_files = list_files_in_folder(service, MASTER_FOLDER_ID)
             # Find Master Sales in Google Drive or local
             m_item = next((f for f in master_files if f['name'] == 'Master_Sales_Full.csv'), None)
             if m_item:
                 fh = download_file_bytes(service, m_item['id'])
-                master_df = pd.read_csv(fh)
+                master_df = pd.read_csv(fh, low_memory=False)
                 raw_mtime = m_item.get('modifiedTime', '')
                 if raw_mtime:
                     last_sync_str = format_bkk_time(raw_mtime)
-            elif os.path.exists('Master_Sales_Full.csv'):
-                master_df = pd.read_csv('Master_Sales_Full.csv')
+            elif os.path.exists(local_csv_path):
+                master_df = pd.read_csv(local_csv_path, low_memory=False)
                 try:
-                    last_sync_str = format_bkk_time(os.path.getmtime('Master_Sales_Full.csv'))
+                    last_sync_str = format_bkk_time(os.path.getmtime(local_csv_path))
                 except Exception:
                     pass
 
-            # Scan 01_Drop_Inbox for all files or any new daily files!
-            all_inbox_files = list_files_in_folder_recursive(service, INBOX_FOLDER_ID)
-            existing_combos = set()
-            if not master_df.empty and 'Date' in master_df.columns and 'Platform' in master_df.columns:
-                existing_combos = set(zip(master_df['Platform'].astype(str), master_df['Date'].astype(str)))
+            # If master_df is still empty, run sync pipeline to build it from Inbox
+            if master_df.empty:
+                _, _ = sync_google_drive_pipeline(service, force_rebuild=True)
+                if os.path.exists(local_csv_path):
+                    master_df = pd.read_csv(local_csv_path, low_memory=False)
 
-            inbox_dfs = []
-            for fid, fname, fpath in all_inbox_files:
-                date_cand = extract_date_from_name_or_content(fname)
-                plat_cand = "Lazada" if "lazada" in fpath.lower() else "Shopee"
-                if existing_combos and date_cand and (plat_cand, date_cand) in existing_combos:
-                    continue
-                try:
-                    fb = download_file_bytes(service, fid)
-                    df_p = parse_raw_sales_file(fb, fname, folder_name=fpath)
-                    if not df_p.empty:
-                        inbox_dfs.append(df_p)
-                except Exception:
-                    pass
-
-            if inbox_dfs:
-                new_data = pd.concat(inbox_dfs, ignore_index=True)
-                if not master_df.empty:
-                    master_df = pd.concat([master_df, new_data], ignore_index=True)
-                else:
-                    master_df = new_data
-                master_df = master_df.drop_duplicates(subset=['Platform', 'Shop_Name', 'Date', 'SKU'], keep='last')
-                # Cache to local disk so subsequent runs load in 0.05 seconds
-                try:
-                    master_df.to_csv('Master_Sales_Full.csv', index=False, encoding='utf-8-sig')
-                except Exception:
-                    pass
-            
             # Find SKU Master if exists in 02_Master_Data
             sku_item = next((f for f in master_files if 'sku' in f['name'].lower() and 'master' in f['name'].lower()), None)
             if sku_item and not master_df.empty:
@@ -685,10 +689,10 @@ if check_password():
                     pass
         else:
             # Local fallback for offline testing (Master_Sales_Full only)
-            if os.path.exists('Master_Sales_Full.csv'):
-                master_df = pd.read_csv('Master_Sales_Full.csv')
+            if os.path.exists(local_csv_path):
+                master_df = pd.read_csv(local_csv_path, low_memory=False)
                 try:
-                    last_sync_str = format_bkk_time(os.path.getmtime('Master_Sales_Full.csv'))
+                    last_sync_str = format_bkk_time(os.path.getmtime(local_csv_path))
                 except Exception:
                     pass
 
@@ -792,7 +796,9 @@ if check_password():
 
         return master_df, active_stock_name, last_sync_str
 
-    local_master_mtime = os.path.getmtime('Master_Sales_Full.csv') if os.path.exists('Master_Sales_Full.csv') else 0
+    base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else '.'
+    local_csv_path = os.path.join(base_dir, 'Master_Sales_Full.csv')
+    local_master_mtime = os.path.getmtime(local_csv_path) if os.path.exists(local_csv_path) else 0
     base_df, active_stock_name, last_sync_str = load_active_data(local_master_mtime)
     st.session_state['active_stock_file_name'] = active_stock_name
     st.session_state['last_sync_time_str'] = last_sync_str
@@ -801,20 +807,30 @@ if check_password():
     with st.sidebar:
         st.header("⚙️ ระบบท่อข้อมูลอัตโนมัติ")
         st.write("**Google Drive Auto-Sync**")
-        if st.button("🔄 ซิงก์ข้อมูลจาก Google Drive"):
-            with st.spinner("กำลังตรวจสอบไฟล์ใหม่ใน 01_Drop_Inbox..."):
-                srv = get_drive_service()
-                status_msg, count = sync_google_drive_pipeline(srv)
-                st.cache_data.clear()
-                if count > 0:
-                    st.success(f"นำเข้าข้อมูลใหม่สำเร็จ {count} ไฟล์!")
-                else:
-                    st.info("ไม่มีไฟล์ใหม่ในห้อง 01_Drop_Inbox (ข้อมูลเป็นปัจจุบันแล้ว)")
-                st.rerun()
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            if st.button("🔄 ซิงก์ไฟล์ใหม่", help="ตรวจสอบไฟล์ใหม่ใน 01_Drop_Inbox และนำเข้าเฉพาะวันที่ยังไม่มี"):
+                with st.spinner("กำลังตรวจสอบไฟล์ใหม่..."):
+                    srv = get_drive_service()
+                    status_msg, count = sync_google_drive_pipeline(srv, force_rebuild=False)
+                    st.cache_data.clear()
+                    if count > 0:
+                        st.success(f"นำเข้าสำเร็จ {count} ไฟล์!")
+                    else:
+                        st.info("ไม่มีไฟล์ใหม่ ข้อมูลเป็นปัจจุบันแล้ว")
+                    st.rerun()
+        with col_s2:
+            if st.button("⚡ รีบิลด์ทั้งหมด", help="อ่านไฟล์รายวันทั้งหมดใน 01_Drop_Inbox จากต้นทางใหม่ 100% เพื่อคำนวณยอดขายใหม่ทั้งหมด"):
+                with st.spinner("กำลังประมวลผลไฟล์ทั้งหมดจาก Inbox..."):
+                    srv = get_drive_service()
+                    status_msg, count = sync_google_drive_pipeline(srv, force_rebuild=True)
+                    st.cache_data.clear()
+                    st.success(f"รีบิลด์สำเร็จ {count} ไฟล์ ยอดตรง 100%!")
+                    st.rerun()
 
         sync_disp = last_sync_str if last_sync_str else "ยังไม่มีบันทึกเวลา"
         st.caption(f"⏱️ **ซิงก์ล่าสุด:** {sync_disp}")
-        st.markdown("<div style='font-size:11px; color:#888; line-height:1.3; margin-top:-5px;'>💡 <i>หากวันที่และเวลาเป็นปัจจุบันแล้ว ไม่จำเป็นต้องกดซิงก์ซ้ำครับ</i></div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:11px; color:#888; line-height:1.3; margin-top:-5px;'>💡 <i>ระบบจะอ่านจากไฟล์รายวันใน 01_Drop_Inbox โดยตรง</i></div>", unsafe_allow_html=True)
 
     # ================= 6. UI Banner & Top Filters =================
     st.markdown("""
