@@ -1309,7 +1309,7 @@ if check_password():
                     is_open = 'open' if pid in open_pids else ''
 
                     rows_html.append(f"""
-                    <div class="parent-item">
+                    <div class="parent-item" data-name="{seller_sku_p} {pname}" data-rev="{rev_val}" data-vis="{vis_val}" data-a2c="{a2c_val}" data-unit="{unit_val}" data-stock="{stock_val}">
                       <details {is_open}>
                         <summary class="row">
                           <div class="col col-prod">
@@ -1332,7 +1332,7 @@ if check_password():
                 else:
                     s_sku = seller_sku_p
                     rows_html.append(f"""
-                    <div class="row standalone-row">
+                    <div class="row standalone-row" data-name="{s_sku} {pname}" data-rev="{rev_val}" data-vis="{vis_val}" data-a2c="{a2c_val}" data-unit="{unit_val}" data-stock="{stock_val}">
                       <div class="col col-prod">
                         <span class="single-sku">{s_sku}</span>
                         <span class="pname-single" title="{pname}">{pname}</span>
@@ -1502,20 +1502,79 @@ if check_password():
     font-weight: 600;
     color: var(--sku-text);
   }}
+  .sortable-header {{
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s ease, background 0.15s ease;
+  }}
+  .sortable-header:hover {{
+    color: var(--badge-text);
+    background: var(--bg-hover);
+  }}
+  .sort-icon {{
+    font-size: 10px;
+    margin-left: 4px;
+    display: inline-block;
+    color: var(--badge-text);
+  }}
 </style>
 </head>
 <body>
-<div class="container">
+<div class="container" id="treeContainer">
   <div class="row header-row">
-    <div class="col-prod">สินค้า / รหัส SKU</div>
-    <div class="col-rev">ยอดขาย (฿)</div>
-    <div class="col-vis">คนเข้าชม</div>
-    <div class="col-a2c">ตะกร้า (A2C)</div>
-    <div class="col-unit">ชิ้นที่ขาย</div>
-    <div class="col-stock">สต็อก</div>
+    <div class="col-prod sortable-header" onclick="sortTable('name')" title="คลิกเพื่อเรียงตามชื่อสินค้า / SKU">สินค้า / รหัส SKU <span id="sort-name" class="sort-icon"></span></div>
+    <div class="col-rev sortable-header" onclick="sortTable('rev')" title="คลิกเพื่อเรียงตามยอดขาย">ยอดขาย (฿) <span id="sort-rev" class="sort-icon">▼</span></div>
+    <div class="col-vis sortable-header" onclick="sortTable('vis')" title="คลิกเพื่อเรียงตามคนเข้าชม">คนเข้าชม <span id="sort-vis" class="sort-icon"></span></div>
+    <div class="col-a2c sortable-header" onclick="sortTable('a2c')" title="คลิกเพื่อเรียงตามตะกร้า">ตะกร้า (A2C) <span id="sort-a2c" class="sort-icon"></span></div>
+    <div class="col-unit sortable-header" onclick="sortTable('unit')" title="คลิกเพื่อเรียงตามชิ้นที่ขาย">ชิ้นที่ขาย <span id="sort-unit" class="sort-icon"></span></div>
+    <div class="col-stock sortable-header" onclick="sortTable('stock')" title="คลิกเพื่อเรียงตามสต็อก">สต็อก <span id="sort-stock" class="sort-icon"></span></div>
   </div>
-  {all_rows}
+  <div id="treeRows">
+    {all_rows}
+  </div>
 </div>
+
+<script>
+let currentSortCol = 'rev';
+let currentSortDir = 'desc';
+
+function sortTable(col) {{
+  if (currentSortCol === col) {{
+    currentSortDir = (currentSortDir === 'desc') ? 'asc' : 'desc';
+  }} else {{
+    currentSortCol = col;
+    currentSortDir = (col === 'name') ? 'asc' : 'desc';
+  }}
+
+  ['name', 'rev', 'vis', 'a2c', 'unit', 'stock'].forEach(c => {{
+    const el = document.getElementById('sort-' + c);
+    if (el) {{
+      el.textContent = (c === currentSortCol) ? (currentSortDir === 'desc' ? ' ▼' : ' ▲') : '';
+    }}
+  }});
+
+  const rowsContainer = document.getElementById('treeRows');
+  if (!rowsContainer) return;
+  const items = Array.from(rowsContainer.children);
+
+  items.sort((a, b) => {{
+    let valA = a.getAttribute('data-' + currentSortCol) || '';
+    let valB = b.getAttribute('data-' + currentSortCol) || '';
+
+    if (currentSortCol === 'name') {{
+      return currentSortDir === 'asc' 
+        ? valA.localeCompare(valB, 'th') 
+        : valB.localeCompare(valA, 'th');
+    }} else {{
+      let numA = parseFloat(valA) || 0;
+      let numB = parseFloat(valB) || 0;
+      return currentSortDir === 'desc' ? numB - numA : numA - numB;
+    }}
+  }});
+
+  items.forEach(item => rowsContainer.appendChild(item));
+}}
+</script>
 </body>
 </html>"""
             return full_html, is_truncated, total_parents
