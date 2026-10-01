@@ -1101,8 +1101,8 @@ if check_password():
         col_config_cat = {
             "Category_Desc": st.column_config.TextColumn("หมวดหมู่สินค้า (Category)", width="large"),
             "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f", width="medium"),
+            "Avg CR": st.column_config.NumberColumn("CR", format="%.2f%%", width="small"),
             "Visitors": st.column_config.NumberColumn("Visitors", format="%,d", width="small"),
-            "Avg CR": st.column_config.NumberColumn("Avg CR", format="%.2f %%", width="small"),
             "Avg Price": st.column_config.NumberColumn("Avg Price", format="%,.2f", width="small"),
             "A2C": st.column_config.NumberColumn("A2C", format="%,d", width="small"),
             "Buyers": st.column_config.NumberColumn("Buyers", format="%,d", width="small"),
@@ -1121,9 +1121,9 @@ if check_password():
             "SKU": st.column_config.TextColumn("SKU Code", width="medium"),
             "Product": st.column_config.TextColumn("ชื่อสินค้า (Description)", width="large"),
             "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f", width="medium"),
+            "Avg CR": st.column_config.NumberColumn("CR", format="%.2f%%", width="small"),
             "Visitors": st.column_config.NumberColumn("Visitors", format="%,d", width="small"),
             "A2C": st.column_config.NumberColumn("A2C", format="%,d", width="small"),
-            "Avg CR": st.column_config.NumberColumn("Avg CR", format="%.2f %%", width="small"),
             "Avg Price": st.column_config.NumberColumn("Avg Price", format="%,.2f", width="small"),
             "Buyers": st.column_config.NumberColumn("Buyers", format="%,d", width="small"),
             "Units_Sold": st.column_config.NumberColumn("Units", format="%,d", width="small"),
@@ -1158,7 +1158,7 @@ if check_password():
         with col_m3:
             st.write("**Product Group (หมวดหมู่สินค้า)**")
             st.dataframe(
-                disp_cat[['Category_Desc', 'Revenue', 'Visitors', 'Avg CR', 'Avg Price', 'A2C', 'Buyers', 'Units_Sold']], 
+                disp_cat[['Category_Desc', 'Revenue', 'Avg CR', 'Visitors', 'Avg Price', 'A2C', 'Buyers', 'Units_Sold']], 
                 hide_index=True, use_container_width=True, height=320,
                 on_select="rerun", selection_mode="multi-row", key="tb_cat",
                 column_config=col_config_cat
@@ -1236,6 +1236,7 @@ if check_password():
                 multi_rows = df_tree[df_tree['Parent_ID'].isin(multi_pids)]
                 child_agg = multi_rows.groupby(['Parent_ID', 'SKU']).agg({
                     'Revenue': 'sum',
+                    'Visitors': 'sum',
                     'A2C': 'sum',
                     'Units_Sold': 'sum',
                     'Buyers': 'sum',
@@ -1276,6 +1277,9 @@ if check_password():
                 seller_sku_p = html_lib.escape(str(row.get('Parent_SKU_Display', row['SKU'])))
                 rev_val = row['Revenue']
                 vis_val = row['Visitors']
+                buyers_val = row['Buyers']
+                cr_val = (buyers_val / vis_val * 100) if vis_val > 0 else 0.0
+                cr_str = f"{cr_val:.2f}%" if vis_val > 0 else "0.00%"
                 a2c_val = row['A2C']
                 unit_val = row['Units_Sold']
                 stock_val = row['Stock_Available']
@@ -1289,6 +1293,11 @@ if check_password():
                     for _, c in children.iterrows():
                         c_sku = html_lib.escape(str(c['SKU']))
                         c_rev = c['Revenue']
+                        c_vis = c.get('Visitors', 0.0)
+                        c_buyers = c.get('Buyers', 0.0)
+                        c_cr = (c_buyers / c_vis * 100) if c_vis > 0 else 0.0
+                        c_cr_str = f"{c_cr:.2f}%" if c_vis > 0 else "-"
+                        c_vis_str = f"{c_vis:,.0f}" if c_vis > 0 else "-"
                         c_a2c = c['A2C']
                         c_unit = c['Units_Sold']
                         c_stock = c['Stock_Available']
@@ -1298,7 +1307,8 @@ if check_password():
                         <div class="row child-row">
                           <div class="col col-prod"><span class="sku-tag">↳ {c_sku}</span></div>
                           <div class="col col-rev">{c_rev:,.0f}</div>
-                          <div class="col col-vis" style="color: var(--text-dim);">-</div>
+                          <div class="col col-cr" style="color: var(--text-dim);">{c_cr_str}</div>
+                          <div class="col col-vis" style="color: var(--text-dim);">{c_vis_str}</div>
                           <div class="col col-a2c">{c_a2c:,.0f}</div>
                           <div class="col col-unit">{c_unit:,.0f}</div>
                           <div class="col col-stock" style="color: {c_stock_color};">{c_stock:,.0f}</div>
@@ -1309,7 +1319,7 @@ if check_password():
                     is_open = 'open' if pid in open_pids else ''
 
                     rows_html.append(f"""
-                    <div class="parent-item" data-name="{seller_sku_p} {pname}" data-rev="{rev_val}" data-vis="{vis_val}" data-a2c="{a2c_val}" data-unit="{unit_val}" data-stock="{stock_val}">
+                    <div class="parent-item" data-name="{seller_sku_p} {pname}" data-rev="{rev_val}" data-cr="{cr_val:.2f}" data-vis="{vis_val}" data-a2c="{a2c_val}" data-unit="{unit_val}" data-stock="{stock_val}">
                       <details {is_open}>
                         <summary class="row">
                           <div class="col col-prod">
@@ -1318,6 +1328,7 @@ if check_password():
                             <span class="pname" title="{pname}">{pname}</span>
                           </div>
                           <div class="col col-rev">{rev_val:,.0f}</div>
+                          <div class="col col-cr">{cr_str}</div>
                           <div class="col col-vis">{vis_val:,.0f}</div>
                           <div class="col col-a2c">{a2c_val:,.0f}</div>
                           <div class="col col-unit">{unit_val:,.0f}</div>
@@ -1332,12 +1343,13 @@ if check_password():
                 else:
                     s_sku = seller_sku_p
                     rows_html.append(f"""
-                    <div class="row standalone-row" data-name="{s_sku} {pname}" data-rev="{rev_val}" data-vis="{vis_val}" data-a2c="{a2c_val}" data-unit="{unit_val}" data-stock="{stock_val}">
+                    <div class="row standalone-row" data-name="{s_sku} {pname}" data-rev="{rev_val}" data-cr="{cr_val:.2f}" data-vis="{vis_val}" data-a2c="{a2c_val}" data-unit="{unit_val}" data-stock="{stock_val}">
                       <div class="col col-prod">
                         <span class="single-sku">{s_sku}</span>
                         <span class="pname-single" title="{pname}">{pname}</span>
                       </div>
                       <div class="col col-rev">{rev_val:,.0f}</div>
+                      <div class="col col-cr">{cr_str}</div>
                       <div class="col col-vis">{vis_val:,.0f}</div>
                       <div class="col col-a2c">{a2c_val:,.0f}</div>
                       <div class="col col-unit">{unit_val:,.0f}</div>
@@ -1434,12 +1446,13 @@ if check_password():
     background: var(--bg-hover);
   }}
 
-  /* Laser-aligned Flexbox Columns: 38% + 14% + 12% + 12% + 11% + 13% = 100% */
-  .col-prod  {{ width: 38%; padding: 8px 10px; text-align: left; overflow: hidden; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }}
+  /* Laser-aligned Flexbox Columns: 32% + 14% + 10% + 11% + 10% + 10% + 13% = 100% */
+  .col-prod  {{ width: 32%; padding: 8px 10px; text-align: left; overflow: hidden; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }}
   .col-rev   {{ width: 14%; padding: 8px 8px; text-align: right; font-weight: bold; flex-shrink: 0; }}
-  .col-vis   {{ width: 12%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
-  .col-a2c   {{ width: 12%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
-  .col-unit  {{ width: 11%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
+  .col-cr    {{ width: 10%; padding: 8px 8px; text-align: right; font-weight: 600; color: #10b981; flex-shrink: 0; }}
+  .col-vis   {{ width: 11%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
+  .col-a2c   {{ width: 10%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
+  .col-unit  {{ width: 10%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
   .col-stock {{ width: 13%; padding: 8px 14px 8px 8px; text-align: right; font-weight: bold; flex-shrink: 0; }}
 
   .child-container {{
@@ -1524,6 +1537,7 @@ if check_password():
   <div class="row header-row">
     <div class="col-prod sortable-header" onclick="sortTable('name')" title="คลิกเพื่อเรียงตามชื่อสินค้า / SKU">สินค้า / รหัส SKU <span id="sort-name" class="sort-icon"></span></div>
     <div class="col-rev sortable-header" onclick="sortTable('rev')" title="คลิกเพื่อเรียงตามยอดขาย">ยอดขาย (฿) <span id="sort-rev" class="sort-icon">▼</span></div>
+    <div class="col-cr sortable-header" onclick="sortTable('cr')" title="คลิกเพื่อเรียงตาม CR">CR (%) <span id="sort-cr" class="sort-icon"></span></div>
     <div class="col-vis sortable-header" onclick="sortTable('vis')" title="คลิกเพื่อเรียงตามคนเข้าชม">คนเข้าชม <span id="sort-vis" class="sort-icon"></span></div>
     <div class="col-a2c sortable-header" onclick="sortTable('a2c')" title="คลิกเพื่อเรียงตามตะกร้า">ตะกร้า (A2C) <span id="sort-a2c" class="sort-icon"></span></div>
     <div class="col-unit sortable-header" onclick="sortTable('unit')" title="คลิกเพื่อเรียงตามชิ้นที่ขาย">ชิ้นที่ขาย <span id="sort-unit" class="sort-icon"></span></div>
@@ -1546,7 +1560,7 @@ function sortTable(col) {{
     currentSortDir = (col === 'name') ? 'asc' : 'desc';
   }}
 
-  ['name', 'rev', 'vis', 'a2c', 'unit', 'stock'].forEach(c => {{
+  ['name', 'rev', 'cr', 'vis', 'a2c', 'unit', 'stock'].forEach(c => {{
     const el = document.getElementById('sort-' + c);
     if (el) {{
       el.textContent = (c === currentSortCol) ? (currentSortDir === 'desc' ? ' ▼' : ' ▲') : '';
@@ -1589,7 +1603,7 @@ function sortTable(col) {{
                 # 100% Classic Direct SKU Data Grid for Lazada
                 st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
                 st.dataframe(
-                    disp_sku[['SKU', 'Product', 'Revenue', 'Visitors', 'A2C', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
+                    disp_sku[['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
                     hide_index=True, use_container_width=True, height=380,
                     on_select="rerun", selection_mode="multi-row", key="tb_sku",
                     column_config=col_config_sku
@@ -1621,7 +1635,7 @@ function sortTable(col) {{
                 with tab_grid:
                     st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
                     st.dataframe(
-                        disp_sku[['SKU', 'Product', 'Revenue', 'Visitors', 'A2C', 'Avg CR', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
+                        disp_sku[['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
                         hide_index=True, use_container_width=True, height=340,
                         on_select="rerun", selection_mode="multi-row", key="tb_sku",
                         column_config=col_config_sku
