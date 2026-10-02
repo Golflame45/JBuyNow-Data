@@ -336,15 +336,15 @@ if check_password():
             sku_col = next((c for c in df.columns if c.lower() in ['sku', 'seller sku', 'รหัสสินค้าตัวเลือก', 'รหัสสินค้า']), None)
             psku_col = next((c for c in df.columns if c.lower() in ['parent sku', 'parent_sku']), None)
 
-            rev_col = next((c for c in df.columns if 'sales' in c.lower() and 'placed' in c.lower()), None) or \
-                      next((c for c in df.columns if 'ยอดขาย' in c and 'ทั้งหมด' in c), None) or \
-                      next((c for c in df.columns if 'sales' in c.lower() and 'confirmed' in c.lower()), None) or \
-                      next((c for c in df.columns if 'ยอดขาย' in c), None) or \
+            rev_col = next((c for c in df.columns if 'sales' in c.lower() and 'placed' in c.lower() and 'per' not in c.lower()), None) or \
+                      next((c for c in df.columns if 'ยอดขาย' in c and 'ทั้งหมด' in c and 'ต่อ' not in c), None) or \
+                      next((c for c in df.columns if 'sales' in c.lower() and 'confirmed' in c.lower() and 'per' not in c.lower()), None) or \
+                      next((c for c in df.columns if 'ยอดขาย' in c and 'ต่อ' not in c), None) or \
                       next((c for c in df.columns if 'revenue' in c.lower()), None)
 
-            vis_col = next((c for c in df.columns if 'visitors' in c.lower() and 'visit' in c.lower()), None) or \
-                      next((c for c in df.columns if 'ผู้เข้าชมสินค้า' in c), None) or \
-                      next((c for c in df.columns if 'visitors' in c.lower()), None) or \
+            vis_col = next((c for c in df.columns if 'visitors' in c.lower() and 'visit' in c.lower() and 'cart' not in c.lower() and 'bounce' not in c.lower()), None) or \
+                      next((c for c in df.columns if 'ผู้เข้าชมสินค้า' in c and 'รถเข็น' not in c and 'แวะ' not in c), None) or \
+                      next((c for c in df.columns if 'visitors' in c.lower() and 'cart' not in c.lower() and 'bounce' not in c.lower()), None) or \
                       next((c for c in df.columns if 'การเข้าชม' in c), None)
 
             buyer_col = next((c for c in df.columns if 'buyers' in c.lower() and 'placed' in c.lower()), None) or \
@@ -352,10 +352,10 @@ if check_password():
                         next((c for c in df.columns if 'buyers' in c.lower()), None) or \
                         next((c for c in df.columns if 'ผู้ซื้อ' in c), None)
 
-            unit_col = next((c for c in df.columns if 'units' in c.lower() and 'placed' in c.lower()), None) or \
-                       next((c for c in df.columns if 'จำนวนที่ขายได้' in c and 'ทั้งหมด' in c), None) or \
-                       next((c for c in df.columns if 'units' in c.lower() and 'confirmed' in c.lower()), None) or \
-                       next((c for c in df.columns if 'จำนวนที่ขายได้' in c), None) or \
+            unit_col = next((c for c in df.columns if 'units' in c.lower() and 'placed' in c.lower() and 'cart' not in c.lower()), None) or \
+                       next((c for c in df.columns if 'จำนวนที่ขายได้' in c and 'ทั้งหมด' in c and 'รถเข็น' not in c), None) or \
+                       next((c for c in df.columns if 'units' in c.lower() and 'confirmed' in c.lower() and 'cart' not in c.lower()), None) or \
+                       next((c for c in df.columns if 'จำนวนที่ขายได้' in c and 'รถเข็น' not in c), None) or \
                        next((c for c in df.columns if 'units sold' in c.lower()), None)
 
             a2c_col = next((c for c in df.columns if 'units' in c.lower() and 'cart' in c.lower()), None) or \
@@ -364,11 +364,9 @@ if check_password():
                       next((c for c in df.columns if 'รถเข็น' in c), None) or \
                       next((c for c in df.columns if 'a2c' in c.lower()), None)
 
-            order_col = next((c for c in df.columns if 'placed order' in c.lower()), None) or \
-                        next((c for c in df.columns if c == 'ทั้งหมด'), None) or \
-                        next((c for c in df.columns if 'confirmed order' in c.lower()), None) or \
-                        next((c for c in df.columns if 'คำสั่งซื้อ' in c), None) or \
-                        next((c for c in df.columns if 'orders' in c.lower()), None)
+            # Placed Order count (MUST NOT match Sales (Placed Order) or Conversion Rate)
+            order_col = next((c for c in df.columns if c.strip().lower() in ['placed order', 'placed orders', 'confirmed order', 'confirmed orders', 'ทั้งหมด', 'ยืนยันแล้ว', 'คำสั่งซื้อ', 'orders', 'order']), None) or \
+                        next((c for c in df.columns if 'order' in c.lower() and not any(k in c.lower() for k in ['sales', 'revenue', 'rate', 'unit', 'buyer', 'conversion', 'thb', 'per', 'ยอดขาย', 'อัตรา', 'จำนวน', 'ผู้ซื้อ'])), None)
 
             has_date = 'Date' in df.columns
             group_key = ['Date', p_id_col] if has_date else [p_id_col]
