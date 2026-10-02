@@ -336,9 +336,11 @@ if check_password():
             sku_col = next((c for c in df.columns if c.lower() in ['sku', 'seller sku', 'รหัสสินค้าตัวเลือก', 'รหัสสินค้า']), None)
             psku_col = next((c for c in df.columns if c.lower() in ['parent sku', 'parent_sku']), None)
 
-            rev_col = next((c for c in df.columns if 'sales' in c.lower() and 'placed' in c.lower() and 'per' not in c.lower()), None) or \
+            # Prioritize Confirmed Order (ยืนยันแล้ว) to match Shopee Seller Centre Realized Sales
+            rev_col = next((c for c in df.columns if 'sales' in c.lower() and 'confirmed' in c.lower() and 'per' not in c.lower()), None) or \
+                      next((c for c in df.columns if 'ยอดขาย' in c and 'ยืนยัน' in c and 'ต่อ' not in c), None) or \
+                      next((c for c in df.columns if 'sales' in c.lower() and 'placed' in c.lower() and 'per' not in c.lower()), None) or \
                       next((c for c in df.columns if 'ยอดขาย' in c and 'ทั้งหมด' in c and 'ต่อ' not in c), None) or \
-                      next((c for c in df.columns if 'sales' in c.lower() and 'confirmed' in c.lower() and 'per' not in c.lower()), None) or \
                       next((c for c in df.columns if 'ยอดขาย' in c and 'ต่อ' not in c), None) or \
                       next((c for c in df.columns if 'revenue' in c.lower()), None)
 
@@ -347,15 +349,17 @@ if check_password():
                       next((c for c in df.columns if 'visitors' in c.lower() and 'cart' not in c.lower() and 'bounce' not in c.lower()), None) or \
                       next((c for c in df.columns if 'การเข้าชม' in c), None)
 
-            buyer_col = next((c for c in df.columns if 'buyers' in c.lower() and 'placed' in c.lower()), None) or \
+            buyer_col = next((c for c in df.columns if 'buyers' in c.lower() and 'confirmed' in c.lower()), None) or \
+                        next((c for c in df.columns if 'ผู้ซื้อ' in c and 'ยืนยัน' in c), None) or \
+                        next((c for c in df.columns if 'buyers' in c.lower() and 'placed' in c.lower()), None) or \
                         next((c for c in df.columns if 'ผู้ซื้อ' in c and 'ทั้งหมด' in c), None) or \
                         next((c for c in df.columns if 'buyers' in c.lower()), None) or \
                         next((c for c in df.columns if 'ผู้ซื้อ' in c), None)
 
-            unit_col = next((c for c in df.columns if 'units' in c.lower() and 'placed' in c.lower() and 'cart' not in c.lower()), None) or \
+            unit_col = next((c for c in df.columns if 'units' in c.lower() and 'confirmed' in c.lower() and 'cart' not in c.lower()), None) or \
+                       next((c for c in df.columns if 'จำนวนที่ขายได้' in c and 'ยืนยัน' in c and 'รถเข็น' not in c), None) or \
+                       next((c for c in df.columns if 'units' in c.lower() and 'placed' in c.lower() and 'cart' not in c.lower()), None) or \
                        next((c for c in df.columns if 'จำนวนที่ขายได้' in c and 'ทั้งหมด' in c and 'รถเข็น' not in c), None) or \
-                       next((c for c in df.columns if 'units' in c.lower() and 'confirmed' in c.lower() and 'cart' not in c.lower()), None) or \
-                       next((c for c in df.columns if 'จำนวนที่ขายได้' in c and 'รถเข็น' not in c), None) or \
                        next((c for c in df.columns if 'units sold' in c.lower()), None)
 
             a2c_col = next((c for c in df.columns if 'units' in c.lower() and 'cart' in c.lower()), None) or \
@@ -364,8 +368,9 @@ if check_password():
                       next((c for c in df.columns if 'รถเข็น' in c), None) or \
                       next((c for c in df.columns if 'a2c' in c.lower()), None)
 
-            # Placed Order count (MUST NOT match Sales (Placed Order) or Conversion Rate)
-            order_col = next((c for c in df.columns if c.strip().lower() in ['placed order', 'placed orders', 'confirmed order', 'confirmed orders', 'ทั้งหมด', 'ยืนยันแล้ว', 'คำสั่งซื้อ', 'orders', 'order']), None) or \
+            # Confirmed Order count (MUST NOT match Sales or Conversion Rate)
+            order_col = next((c for c in df.columns if c.strip().lower() in ['confirmed order', 'confirmed orders', 'ยืนยันแล้ว']), None) or \
+                        next((c for c in df.columns if c.strip().lower() in ['placed order', 'placed orders', 'ทั้งหมด', 'คำสั่งซื้อ', 'orders', 'order']), None) or \
                         next((c for c in df.columns if 'order' in c.lower() and not any(k in c.lower() for k in ['sales', 'revenue', 'rate', 'unit', 'buyer', 'conversion', 'thb', 'per', 'ยอดขาย', 'อัตรา', 'จำนวน', 'ผู้ซื้อ'])), None)
 
             has_date = 'Date' in df.columns
@@ -538,7 +543,8 @@ if check_password():
 
         if master_file_item and not force_rebuild:
             fh = download_file_bytes(service, master_file_item['id'])
-            master_df = pd.read_csv(fh, low_memory=False)
+            comp = 'gzip' if master_file_item['name'].endswith('.gz') else 'infer'
+            master_df = pd.read_csv(fh, compression=comp, low_memory=False)
         elif os.path.exists(local_gz_path) and not force_rebuild:
             master_df = pd.read_csv(local_gz_path, compression='gzip', low_memory=False)
         elif os.path.exists(local_csv_path) and not force_rebuild:
@@ -676,7 +682,8 @@ if check_password():
             m_item = next((f for f in master_files if f['name'] in ['Master_Sales_Full.csv.gz', 'Master_Sales_Full.csv']), None)
             if m_item:
                 fh = download_file_bytes(service, m_item['id'])
-                master_df = pd.read_csv(fh, low_memory=False)
+                comp = 'gzip' if m_item['name'].endswith('.gz') else 'infer'
+                master_df = pd.read_csv(fh, compression=comp, low_memory=False)
                 raw_mtime = m_item.get('modifiedTime', '')
                 if raw_mtime:
                     last_sync_str = format_bkk_time(raw_mtime)
