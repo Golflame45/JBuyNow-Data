@@ -530,15 +530,21 @@ if check_password():
         if not service:
             return "ไม่สามารถเชื่อมต่อ Google Drive API ได้ (กรุณาเช็ค Secrets)", 0
 
-        # Step 1: Check existing Master file in 02_Master_Data
+        # Step 1: Check existing Master file in 02_Master_Data or locally
         master_files = list_files_in_folder(service, MASTER_FOLDER_ID)
-        master_file_item = next((f for f in master_files if f['name'] == 'Master_Sales_Full.csv'), None)
+        master_file_item = next((f for f in master_files if f['name'] in ['Master_Sales_Full.csv.gz', 'Master_Sales_Full.csv']), None)
         
+        base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else '.'
+        local_gz_path = os.path.join(base_dir, 'Master_Sales_Full.csv.gz')
+        local_csv_path = os.path.join(base_dir, 'Master_Sales_Full.csv')
+
         if master_file_item and not force_rebuild:
             fh = download_file_bytes(service, master_file_item['id'])
             master_df = pd.read_csv(fh, low_memory=False)
-        elif os.path.exists('Master_Sales_Full.csv') and not force_rebuild:
-            master_df = pd.read_csv('Master_Sales_Full.csv', low_memory=False)
+        elif os.path.exists(local_gz_path) and not force_rebuild:
+            master_df = pd.read_csv(local_gz_path, compression='gzip', low_memory=False)
+        elif os.path.exists(local_csv_path) and not force_rebuild:
+            master_df = pd.read_csv(local_csv_path, low_memory=False)
         else:
             master_df = pd.DataFrame()
 
@@ -595,14 +601,19 @@ if check_password():
             else:
                 full_df = combined_new
 
+            # Filter out 100% dead rows where everything is 0 to keep dataset compact and fast
+            full_df = full_df[(full_df['Revenue'] > 0) | (full_df['Visitors'] > 0) | (full_df['Buyers'] > 0) | (full_df['Units_Sold'] > 0) | (full_df['A2C'] > 0)]
+
             # Sort deterministically
             full_df = full_df.sort_values(['Date', 'Platform', 'Shop_Name', 'Revenue'], ascending=[True, True, True, False]).reset_index(drop=True)
 
-            # Save locally
+            # Save locally (both uncompressed .csv and compact .csv.gz)
             try:
                 base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else '.'
                 local_csv_path = os.path.join(base_dir, 'Master_Sales_Full.csv')
+                local_gz_path = os.path.join(base_dir, 'Master_Sales_Full.csv.gz')
                 full_df.to_csv(local_csv_path, index=False, encoding='utf-8-sig')
+                full_df.to_csv(local_gz_path, index=False, compression='gzip')
             except Exception:
                 pass
 
@@ -658,18 +669,25 @@ if check_password():
             return (upload_time or "0000", name_date or "0000", fname)
 
         base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else '.'
+        local_gz_path = os.path.join(base_dir, 'Master_Sales_Full.csv.gz')
         local_csv_path = os.path.join(base_dir, 'Master_Sales_Full.csv')
 
         if service:
             master_files = list_files_in_folder(service, MASTER_FOLDER_ID)
-            # Find Master Sales in Google Drive or local
-            m_item = next((f for f in master_files if f['name'] == 'Master_Sales_Full.csv'), None)
+            # Find Master Sales in Google Drive or local (prioritize .csv.gz or .csv)
+            m_item = next((f for f in master_files if f['name'] in ['Master_Sales_Full.csv.gz', 'Master_Sales_Full.csv']), None)
             if m_item:
                 fh = download_file_bytes(service, m_item['id'])
                 master_df = pd.read_csv(fh, low_memory=False)
                 raw_mtime = m_item.get('modifiedTime', '')
                 if raw_mtime:
                     last_sync_str = format_bkk_time(raw_mtime)
+            elif os.path.exists(local_gz_path):
+                master_df = pd.read_csv(local_gz_path, compression='gzip', low_memory=False)
+                try:
+                    last_sync_str = format_bkk_time(os.path.getmtime(local_gz_path))
+                except Exception:
+                    pass
             elif os.path.exists(local_csv_path):
                 master_df = pd.read_csv(local_csv_path, low_memory=False)
                 try:
@@ -680,7 +698,9 @@ if check_password():
             # If master_df is still empty, run sync pipeline to build it from Inbox
             if master_df.empty:
                 _, _ = sync_google_drive_pipeline(service, force_rebuild=True)
-                if os.path.exists(local_csv_path):
+                if os.path.exists(local_gz_path):
+                    master_df = pd.read_csv(local_gz_path, compression='gzip', low_memory=False)
+                elif os.path.exists(local_csv_path):
                     master_df = pd.read_csv(local_csv_path, low_memory=False)
 
             # Find SKU Master if exists in 02_Master_Data
@@ -729,7 +749,13 @@ if check_password():
                     pass
         else:
             # Local fallback for offline testing (Master_Sales_Full only)
-            if os.path.exists(local_csv_path):
+            if os.path.exists(local_gz_path):
+                master_df = pd.read_csv(local_gz_path, compression='gzip', low_memory=False)
+                try:
+                    last_sync_str = format_bkk_time(os.path.getmtime(local_gz_path))
+                except Exception:
+                    pass
+            elif os.path.exists(local_csv_path):
                 master_df = pd.read_csv(local_csv_path, low_memory=False)
                 try:
                     last_sync_str = format_bkk_time(os.path.getmtime(local_csv_path))
