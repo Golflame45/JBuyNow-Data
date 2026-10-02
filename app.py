@@ -147,16 +147,23 @@ if check_password():
                 files.append((it['id'], it['name'], current_path))
         return files
 
-    def extract_date_from_name_or_content(file_name, raw_df=None):
-        # Pattern 1: 25Sep2026 or 25-Sep-2026 or 25_Sep_2026
-        m1 = re.search(r'(\d{1,2})\s*[-_.]?\s*([A-Za-z]{3})\s*[-_.]?\s*(202\d)', file_name)
-        if m1:
-            d, m, y = m1.groups()
-            try:
-                return datetime.strptime(f"{d}{m}{y}", "%d%b%Y").strftime("%Y-%m-%d")
-            except: pass
+    MONTH_NAME_MAP = {
+        'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
+        'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
+        'aug': 8, 'august': 8, 'sep': 9, 'sept': 9, 'september': 9,
+        'oct': 10, 'october': 10, 'nov': 11, 'november': 11, 'dec': 12, 'december': 12
+    }
 
-        # Pattern 2: 20260925 or 2026-09-25 or 2026_09_25
+    def extract_date_from_name_or_content(file_name, raw_df=None):
+        # Pattern 1: 31July2026 or 25Sep2026 or 25-Sep-2026 or 25_Sep_2026
+        m1 = re.search(r'(\d{1,2})\s*[-_.]?\s*([A-Za-z]{3,9})\s*[-_.]?\s*(202\d)', file_name, re.IGNORECASE)
+        if m1:
+            d, m_str, y = m1.groups()
+            m_num = MONTH_NAME_MAP.get(m_str.lower())
+            if m_num:
+                return f"{y}-{m_num:02d}-{int(d):02d}"
+
+        # Pattern 2: 20260925 or 2026-09-25 or parentskudetail.20260909_20260909
         m2 = re.search(r'(202\d)[-_.]?(\d{2})[-_.]?(\d{2})', file_name)
         if m2:
             return f"{m2.group(1)}-{m2.group(2)}-{m2.group(3)}"
@@ -183,6 +190,8 @@ if check_password():
         
         # Detect Platform
         name_check = f"{folder_name}/{file_name}".lower()
+        if "tiktok" in name_check or "tt" in name_check:
+            return pd.DataFrame()
         platform = "Lazada" if "lazada" in name_check or "laz" in name_check else "Shopee"
         
         # Detect Shop Name from folder name
@@ -197,7 +206,7 @@ if check_password():
         header_idx = 0
         for r in range(min(15, len(raw_df))):
             row_vals = [str(x).strip().lower() for x in raw_df.iloc[r].dropna().tolist()]
-            if any(k in row_vals for k in ['seller sku', 'sku', 'product name', 'item name', 'revenue', 'ยอดขาย', 'รหัสสินค้า']):
+            if any(k in row_vals for k in ['seller sku', 'sku', 'product name', 'item name', 'revenue', 'ยอดขาย', 'รหัสสินค้า', 'item id', 'product', 'variation id']):
                 header_idx = r
                 break
                 
@@ -320,19 +329,46 @@ if check_password():
                 s = series.fillna('').astype(str).str.strip()
                 return s.replace({'nan': '', 'None': '', '-': ''})
 
-            p_id_col = next((c for c in df.columns if c in ['รหัสสินค้า', 'Product ID', 'Item ID']), None)
-            p_name_col = next((c for c in df.columns if c in ['ผลิตภัณฑ์', 'ชื่อสินค้า', 'Product Name', 'Item Name']), None)
-            v_id_col = next((c for c in df.columns if c in ['รหัสตัวเลือกสินค้า', 'Variation ID', 'Model ID']), None)
-            v_name_col = next((c for c in df.columns if c in ['ชื่อตัวเลือกสินค้า', 'Variation Name', 'Model Name']), None)
-            sku_col = next((c for c in df.columns if c in ['SKU', 'Seller SKU', 'รหัสสินค้าตัวเลือก']), None)
-            psku_col = next((c for c in df.columns if c in ['Parent SKU', 'Parent_SKU']), None)
+            p_id_col = next((c for c in df.columns if c.lower() in ['item id', 'product id', 'รหัสสินค้า']), None)
+            p_name_col = next((c for c in df.columns if c.lower() in ['product', 'product name', 'ชื่อสินค้า', 'ผลิตภัณฑ์', 'item name']), None)
+            v_id_col = next((c for c in df.columns if c.lower() in ['variation id', 'model id', 'รหัสตัวเลือกสินค้า']), None)
+            v_name_col = next((c for c in df.columns if c.lower() in ['variation name', 'model name', 'ชื่อตัวเลือกสินค้า']), None)
+            sku_col = next((c for c in df.columns if c.lower() in ['sku', 'seller sku', 'รหัสสินค้าตัวเลือก', 'รหัสสินค้า']), None)
+            psku_col = next((c for c in df.columns if c.lower() in ['parent sku', 'parent_sku']), None)
 
-            rev_col = next((c for c in df.columns if 'ยอดขาย' in c and 'ทั้งหมด' in c), None) or next((c for c in df.columns if 'ยอดขาย' in c), None) or next((c for c in df.columns if 'revenue' in c.lower()), None)
-            vis_col = next((c for c in df.columns if 'ผู้เข้าชมสินค้า' in c), None) or next((c for c in df.columns if 'การเข้าชม' in c), None) or next((c for c in df.columns if 'visitor' in c.lower()), None)
-            buyer_col = next((c for c in df.columns if 'ผู้ซื้อ' in c and 'ทั้งหมด' in c), None) or next((c for c in df.columns if 'ผู้ซื้อ' in c), None) or next((c for c in df.columns if 'buyer' in c.lower()), None)
-            unit_col = next((c for c in df.columns if 'จำนวนที่ขายได้' in c and 'ทั้งหมด' in c), None) or next((c for c in df.columns if 'จำนวนที่ขายได้' in c), None) or next((c for c in df.columns if 'units sold' in c.lower()), None)
-            a2c_col = next((c for c in df.columns if 'รถเข็น' in c and 'จำนวน' in c), None) or next((c for c in df.columns if 'รถเข็น' in c), None) or next((c for c in df.columns if 'a2c' in c.lower()), None)
-            order_col = next((c for c in df.columns if c == 'ทั้งหมด'), None) or next((c for c in df.columns if 'คำสั่งซื้อ' in c), None) or next((c for c in df.columns if 'orders' in c.lower()), None)
+            rev_col = next((c for c in df.columns if 'sales' in c.lower() and 'placed' in c.lower()), None) or \
+                      next((c for c in df.columns if 'ยอดขาย' in c and 'ทั้งหมด' in c), None) or \
+                      next((c for c in df.columns if 'sales' in c.lower() and 'confirmed' in c.lower()), None) or \
+                      next((c for c in df.columns if 'ยอดขาย' in c), None) or \
+                      next((c for c in df.columns if 'revenue' in c.lower()), None)
+
+            vis_col = next((c for c in df.columns if 'visitors' in c.lower() and 'visit' in c.lower()), None) or \
+                      next((c for c in df.columns if 'ผู้เข้าชมสินค้า' in c), None) or \
+                      next((c for c in df.columns if 'visitors' in c.lower()), None) or \
+                      next((c for c in df.columns if 'การเข้าชม' in c), None)
+
+            buyer_col = next((c for c in df.columns if 'buyers' in c.lower() and 'placed' in c.lower()), None) or \
+                        next((c for c in df.columns if 'ผู้ซื้อ' in c and 'ทั้งหมด' in c), None) or \
+                        next((c for c in df.columns if 'buyers' in c.lower()), None) or \
+                        next((c for c in df.columns if 'ผู้ซื้อ' in c), None)
+
+            unit_col = next((c for c in df.columns if 'units' in c.lower() and 'placed' in c.lower()), None) or \
+                       next((c for c in df.columns if 'จำนวนที่ขายได้' in c and 'ทั้งหมด' in c), None) or \
+                       next((c for c in df.columns if 'units' in c.lower() and 'confirmed' in c.lower()), None) or \
+                       next((c for c in df.columns if 'จำนวนที่ขายได้' in c), None) or \
+                       next((c for c in df.columns if 'units sold' in c.lower()), None)
+
+            a2c_col = next((c for c in df.columns if 'units' in c.lower() and 'cart' in c.lower()), None) or \
+                      next((c for c in df.columns if 'รถเข็น' in c and 'จำนวน' in c), None) or \
+                      next((c for c in df.columns if 'visitors' in c.lower() and 'cart' in c.lower()), None) or \
+                      next((c for c in df.columns if 'รถเข็น' in c), None) or \
+                      next((c for c in df.columns if 'a2c' in c.lower()), None)
+
+            order_col = next((c for c in df.columns if 'placed order' in c.lower()), None) or \
+                        next((c for c in df.columns if c == 'ทั้งหมด'), None) or \
+                        next((c for c in df.columns if 'confirmed order' in c.lower()), None) or \
+                        next((c for c in df.columns if 'คำสั่งซื้อ' in c), None) or \
+                        next((c for c in df.columns if 'orders' in c.lower()), None)
 
             has_date = 'Date' in df.columns
             group_key = ['Date', p_id_col] if has_date else [p_id_col]
@@ -516,6 +552,8 @@ if check_password():
             existing_combos = set(zip(master_df['Platform'].astype(str), master_df['Date'].astype(str)))
 
         for fid, fname, fpath in all_inbox_files:
+            if "tiktok" in fpath.lower() or "tiktok" in fname.lower() or "tt" in fpath.lower():
+                continue
             date_cand = extract_date_from_name_or_content(fname)
             plat_cand = "Lazada" if ("lazada" in fpath.lower() or "laz" in fpath.lower() or "lazada" in fname.lower()) else "Shopee"
             # Skip downloading if already present in master and not force rebuilding
@@ -581,6 +619,8 @@ if check_password():
             except Exception:
                 pass
             master_df = full_df
+            st.session_state['active_df'] = full_df
+            st.cache_data.clear()
 
         return "ซิงก์สำเร็จ", files_processed_count
 
@@ -944,8 +984,8 @@ if check_password():
         cat_base = filtered_df.groupby('Category_Desc').agg({
             'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'
         }).reset_index().sort_values('Revenue', ascending=False)
-        cat_base['Avg CR'] = (cat_base['Buyers'] / cat_base['Visitors'] * 100).fillna(0)
-        cat_base['Avg Price'] = (cat_base['Revenue'] / cat_base['Units_Sold']).fillna(0)
+        cat_base['Avg CR'] = (cat_base['Buyers'] / cat_base['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
+        cat_base['Avg Price'] = (cat_base['Revenue'] / cat_base['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
 
         daily_base = filtered_df.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index().sort_values('DateObj')
         daily_base['Date'] = pd.to_datetime(daily_base['DateObj']).dt.date
@@ -953,8 +993,8 @@ if check_password():
             'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum',
             'Stock_Available': 'first'
         }).reset_index().sort_values('Revenue', ascending=False)
-        sku_base['Avg CR'] = (sku_base['Buyers'] / sku_base['Visitors'] * 100).fillna(0)
-        sku_base['Avg Price'] = (sku_base['Revenue'] / sku_base['Units_Sold']).fillna(0)
+        sku_base['Avg CR'] = (sku_base['Buyers'] / sku_base['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
+        sku_base['Avg Price'] = (sku_base['Revenue'] / sku_base['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
 
         # Cross-Filtering Extraction
         def get_selected_rows(key):
@@ -1053,8 +1093,8 @@ if check_password():
             'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'
         }).reset_index()
         disp_cat = disp_cat[(disp_cat['Revenue'] > 0) | (disp_cat['Visitors'] > 0) | (disp_cat['A2C'] > 0)]
-        disp_cat['Avg CR'] = (disp_cat['Buyers'] / disp_cat['Visitors'] * 100).fillna(0)
-        disp_cat['Avg Price'] = (disp_cat['Revenue'] / disp_cat['Units_Sold']).fillna(0)
+        disp_cat['Avg CR'] = (disp_cat['Buyers'] / disp_cat['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
+        disp_cat['Avg Price'] = (disp_cat['Revenue'] / disp_cat['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
         disp_cat = disp_cat.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
         st.session_state['tb_cat_rendered_ids'] = disp_cat['Category_Desc'].tolist()
 
@@ -1085,8 +1125,8 @@ if check_password():
             'Stock_Available': 'first'
         }).reset_index()
         disp_sku = disp_sku[(disp_sku['Revenue'] > 0) | (disp_sku['Visitors'] > 0) | (disp_sku['A2C'] > 0)]
-        disp_sku['Avg CR'] = (disp_sku['Buyers'] / disp_sku['Visitors'] * 100).fillna(0)
-        disp_sku['Avg Price'] = (disp_sku['Revenue'] / disp_sku['Units_Sold']).fillna(0)
+        disp_sku['Avg CR'] = (disp_sku['Buyers'] / disp_sku['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
+        disp_sku['Avg Price'] = (disp_sku['Revenue'] / disp_sku['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
         disp_sku = disp_sku.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
         st.session_state['tb_sku_rendered_ids'] = disp_sku['SKU'].tolist()
 
