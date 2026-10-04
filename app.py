@@ -1343,10 +1343,9 @@ if check_password():
                 column_config=col_config_day
             )
 
-        def render_tree_view_html(df_input, search_term="", is_fullscreen=False):
+        def prepare_tree_view_data(df_input, search_term=""):
             if df_input.empty:
-                empty_html = """<!DOCTYPE html><html><body style="background:transparent;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#888;display:flex;align-items:center;justify-content:center;height:100px;"><p>ไม่มีข้อมูลสินค้าตามตัวกรองที่เลือก</p></body></html>"""
-                return empty_html, False, 0
+                return pd.DataFrame(), {}, set(), 0, True
 
             df_tree = df_input.copy()
             if 'Parent_SKU' in df_tree.columns:
@@ -1418,10 +1417,9 @@ if check_password():
                     variants_dict[pid] = group
 
             st_clean = search_term.strip().lower()
-            matching_pids = set()
             open_pids = set()
-
             if st_clean:
+                matching_pids = set()
                 for _, row in parent_df.iterrows():
                     pid = row['Parent_ID']
                     p_disp_sku = str(row.get('Parent_SKU_Display', '')).lower()
@@ -1437,6 +1435,153 @@ if check_password():
                 parent_df = parent_df[parent_df['Parent_ID'].isin(matching_pids)]
 
             total_parents = len(parent_df)
+            return parent_df, variants_dict, open_pids, total_parents, False
+
+        def export_tree_view_to_excel(df_input, search_term=""):
+            parent_df, variants_dict, _, _, is_empty = prepare_tree_view_data(df_input, search_term)
+            buf = io.BytesIO()
+            if is_empty or parent_df.empty:
+                with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+                    pd.DataFrame({'ข้อความ': ['ไม่มีข้อมูลตามเงื่อนไขที่เลือก']}).to_excel(writer, index=False, sheet_name='Tree_View')
+                buf.seek(0)
+                return buf.getvalue()
+
+            export_rows = []
+            for _, p_row in parent_df.iterrows():
+                pid = p_row['Parent_ID']
+                p_sku = p_row['Parent_SKU_Display']
+                p_prod = p_row['Product']
+                p_rev = p_row['Revenue']
+                p_vis = p_row['Visitors']
+                p_buyers = p_row['Buyers']
+                p_cr = (p_buyers / p_vis * 100) if p_vis > 0 else 0.0
+                p_a2c = p_row['A2C']
+                p_unit = p_row['Units_Sold']
+                p_stock = p_row['Stock_Available']
+                p_vcount = p_row['variant_count']
+
+                export_rows.append({
+                    'ระดับ': f"แม่ (Parent: {p_vcount} ตัวเลือก)" if p_vcount > 1 else "สินค้าเดี่ยว (Single)",
+                    'Parent SKU': p_sku,
+                    'SKU Code': p_sku,
+                    'ชื่อสินค้า / รายละเอียด': p_prod,
+                    'ยอดรวมยืนยัน (฿)': round(float(p_rev), 2),
+                    'CR บนยอดยืนยัน (%)': round(float(p_cr), 2),
+                    'คนเข้าชม': int(p_vis),
+                    'ตะกร้า (A2C)': int(p_a2c),
+                    'Qty ยืนยัน': int(p_unit),
+                    'ผู้ซื้อ': int(p_buyers),
+                    'สต็อก': int(p_stock)
+                })
+
+                if p_vcount > 1 and pid in variants_dict:
+                    for _, c_row in variants_dict[pid].iterrows():
+                        c_sku = c_row['SKU']
+                        c_prod = c_row['Product']
+                        c_rev = c_row['Revenue']
+                        c_vis = c_row['Visitors']
+                        c_buyers = c_row['Buyers']
+                        c_cr = (c_buyers / c_vis * 100) if c_vis > 0 else 0.0
+                        c_a2c = c_row['A2C']
+                        c_unit = c_row['Units_Sold']
+                        c_stock = c_row['Stock_Available']
+
+                        export_rows.append({
+                            'ระดับ': '  ↳ ลูก (Variant)',
+                            'Parent SKU': p_sku,
+                            'SKU Code': c_sku,
+                            'ชื่อสินค้า / รายละเอียด': f"↳ {c_sku} - {c_prod}" if c_prod and c_prod != p_prod else f"↳ {c_sku}",
+                            'ยอดรวมยืนยัน (฿)': round(float(c_rev), 2),
+                            'CR บนยอดยืนยัน (%)': round(float(c_cr), 2),
+                            'คนเข้าชม': int(c_vis),
+                            'ตะกร้า (A2C)': int(c_a2c),
+                            'Qty ยืนยัน': int(c_unit),
+                            'ผู้ซื้อ': int(c_buyers),
+                            'สต็อก': int(c_stock)
+                        })
+
+            export_df = pd.DataFrame(export_rows)
+            with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+                export_df.to_excel(writer, index=False, sheet_name='Tree_View_Hierarchy')
+                ws = writer.sheets['Tree_View_Hierarchy']
+                try:
+                    from openpyxl.styles import Font, PatternFill, Alignment
+                    header_fill = PatternFill(start_color='1F2937', end_color='1F2937', fill_type='solid')
+                    header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+                    for cell in ws[1]:
+                        cell.fill = header_fill
+                        cell.font = header_font
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+
+                    parent_fill = PatternFill(start_color='F1F5F9', end_color='F1F5F9', fill_type='solid')
+                    parent_font = Font(name='Calibri', size=10, bold=True)
+                    child_font = Font(name='Calibri', size=10)
+
+                    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+                        level_val = str(row[0].value or '')
+                        is_parent = 'แม่' in level_val or 'เดี่ยว' in level_val
+                        for cell in row:
+                            if is_parent:
+                                cell.fill = parent_fill
+                                cell.font = parent_font
+                            else:
+                                cell.font = child_font
+
+                    for col in ws.columns:
+                        max_len = max(len(str(cell.value or '')) for cell in col)
+                        col_letter = col[0].column_letter
+                        ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 50)
+                except Exception:
+                    pass
+
+            buf.seek(0)
+            return buf.getvalue()
+
+        def export_sku_to_excel(df_sku):
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+                cols = ['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']
+                actual_cols = [c for c in cols if c in df_sku.columns]
+                out_df = df_sku[actual_cols].copy()
+                rename_map = {
+                    'SKU': 'SKU Code',
+                    'Product': 'ชื่อสินค้า (Description)',
+                    'Revenue': 'ยอดรวมยืนยัน (฿)',
+                    'Avg CR': 'CR บนยอดยืนยัน (%)',
+                    'Visitors': 'คนเข้าชม',
+                    'A2C': 'ตะกร้า (A2C)',
+                    'Avg Price': 'ราคาเฉลี่ย/ชิ้น',
+                    'Buyers': 'ผู้ซื้อ',
+                    'Units_Sold': 'Qty ยืนยัน',
+                    'Stock_Available': 'สต็อก'
+                }
+                out_df = out_df.rename(columns=rename_map)
+                out_df.to_excel(writer, index=False, sheet_name='SKU_Summary')
+                ws = writer.sheets['SKU_Summary']
+                try:
+                    from openpyxl.styles import Font, PatternFill, Alignment
+                    header_fill = PatternFill(start_color='1F2937', end_color='1F2937', fill_type='solid')
+                    header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+                    for cell in ws[1]:
+                        cell.fill = header_fill
+                        cell.font = header_font
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+                    for col in ws.columns:
+                        max_len = max(len(str(cell.value or '')) for cell in col)
+                        col_letter = col[0].column_letter
+                        ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 50)
+                except Exception:
+                    pass
+            buf.seek(0)
+            return buf.getvalue()
+
+        def render_tree_view_html(df_input, search_term="", is_fullscreen=False):
+            parent_df, variants_dict, open_pids, total_parents, is_empty = prepare_tree_view_data(df_input, search_term)
+            if is_empty or parent_df.empty:
+                empty_html = """<!DOCTYPE html><html><body style="background:transparent;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#888;display:flex;align-items:center;justify-content:center;height:100px;"><p>ไม่มีข้อมูลสินค้าตามตัวกรองที่เลือก</p></body></html>"""
+                return empty_html, False, 0
+
+            st_clean = search_term.strip().lower()
             is_truncated = False
             max_limit = 500 if is_fullscreen else 100
             if not st_clean and total_parents > max_limit:
@@ -1775,7 +1920,7 @@ function sortTable(col) {{
 
             @st.dialog("🌳 เจาะลึก Parent & Variants (Tree View - ขยายเต็มจอ)", width="large")
             def open_fullscreen_tree_dialog():
-                col_dlg_s, col_dlg_b = st.columns([3, 1])
+                col_dlg_s, col_dlg_exp, col_dlg_b = st.columns([2.2, 1.2, 1.0])
                 with col_dlg_s:
                     dlg_s = st.text_input(
                         "ค้นหาตามชื่อสินค้า / รหัส SKU",
@@ -1784,18 +1929,41 @@ function sortTable(col) {{
                         placeholder="🔍 พิมพ์ชื่อสินค้า หรือ รหัส SKU เพื่อค้นหา...",
                         label_visibility="collapsed"
                     )
+                with col_dlg_exp:
+                    excel_tree_dlg = export_tree_view_to_excel(df_for_sku, dlg_s)
+                    st.download_button(
+                        label="📥 ส่งออก Excel",
+                        data=excel_tree_dlg,
+                        file_name=f"Tree_View_Hierarchy_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="btn_tree_dlg_export_excel",
+                        use_container_width=True,
+                        help="ดาวน์โหลดข้อมูล Tree View (ลำดับชั้นสินค้า แม่-ลูก) ทั้งหมดเป็นไฟล์ Excel"
+                    )
                 with col_dlg_b:
                     if active_stock:
                         st.markdown(f"<div style='text-align:right; font-size:13px; color:#0099ff; padding-top:6px;'>📦 สต็อก: {active_stock}</div>", unsafe_allow_html=True)
                 t_html, t_trunc, t_tot = render_tree_view_html(df_for_sku, dlg_s, is_fullscreen=True)
                 components.html(t_html, height=720, scrolling=True)
                 if t_trunc:
-                    st.caption(f"* แสดง 500 อันดับแรกจากทั้งหมด {t_tot:,} สินค้า (พิมพ์ค้นหาในช่องด้านบนเพื่อดูสินค้าอื่นเพิ่มเติม)")
+                    st.caption(f"* แสดง 500 อันดับแรกจากทั้งหมด {t_tot:,} สินค้า (กดปุ่ม '📥 ส่งออก Excel' เพื่อดูข้อมูลครบ 100% ทุกรายการ)")
 
             @st.dialog("📋 ตารางสรุปราย SKU (Data Grid - ขยายเต็มจอ)", width="large")
             def open_fullscreen_sku_dialog():
-                if active_stock:
-                    st.markdown(f"<div style='font-size:13px; color:#0099ff; margin-bottom:8px;'>📦 สต็อกอ้างอิง: {active_stock}</div>", unsafe_allow_html=True)
+                col_sdlg_exp, col_sdlg_stk = st.columns([1.5, 3.0])
+                with col_sdlg_exp:
+                    excel_sku_dlg = export_sku_to_excel(disp_sku)
+                    st.download_button(
+                        label="📥 ส่งออก Excel (ราย SKU)",
+                        data=excel_sku_dlg,
+                        file_name=f"SKU_Summary_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="btn_sku_dlg_export_excel",
+                        use_container_width=True
+                    )
+                with col_sdlg_stk:
+                    if active_stock:
+                        st.markdown(f"<div style='text-align:right; font-size:13px; color:#0099ff; padding-top:6px;'>📦 สต็อกอ้างอิง: {active_stock}</div>", unsafe_allow_html=True)
                 st.dataframe(
                     disp_sku[['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
                     hide_index=True, use_container_width=True, height=720,
@@ -1803,9 +1971,19 @@ function sortTable(col) {{
                 )
 
             if is_lazada_only:
-                col_laz_title, col_laz_btn = st.columns([3.2, 1.2])
+                col_laz_title, col_laz_exp, col_laz_btn = st.columns([2.4, 1.1, 1.2])
                 with col_laz_title:
                     st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
+                with col_laz_exp:
+                    excel_laz = export_sku_to_excel(disp_sku)
+                    st.download_button(
+                        label="📥 ส่งออก Excel",
+                        data=excel_laz,
+                        file_name=f"Lazada_SKU_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="btn_laz_export_excel",
+                        use_container_width=True
+                    )
                 with col_laz_btn:
                     if st.button("⛶ ขยายเต็มหน้าจอ", key="btn_laz_sku_full", use_container_width=True):
                         open_fullscreen_sku_dialog()
@@ -1822,7 +2000,7 @@ function sortTable(col) {{
                 ])
                 
                 with tab_tree:
-                    col_t_search, col_t_btn, col_t_badge = st.columns([2.2, 1.3, 1.2])
+                    col_t_search, col_t_btn, col_t_exp, col_t_badge = st.columns([1.8, 1.1, 1.1, 1.0])
                     with col_t_search:
                         tree_search = st.text_input(
                             "ค้นหาตามชื่อสินค้า / รหัส SKU", 
@@ -1833,6 +2011,17 @@ function sortTable(col) {{
                     with col_t_btn:
                         if st.button("⛶ ขยายเต็มหน้าจอ", key="btn_tree_full", use_container_width=True):
                             open_fullscreen_tree_dialog()
+                    with col_t_exp:
+                        excel_tree_data = export_tree_view_to_excel(df_for_sku, tree_search)
+                        st.download_button(
+                            label="📥 ส่งออก Excel",
+                            data=excel_tree_data,
+                            file_name=f"Tree_View_Hierarchy_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="btn_tree_export_excel",
+                            use_container_width=True,
+                            help="ดาวน์โหลดข้อมูล Tree View (ลำดับชั้นสินค้า แม่-ลูก) ทั้งหมดเป็นไฟล์ Excel"
+                        )
                     with col_t_badge:
                         if active_stock:
                             st.markdown(f"<div style='text-align:right; font-size:12px; color:#0099ff; padding-top:6px;'>📦 สต็อก: {active_stock}</div>", unsafe_allow_html=True)
@@ -1840,12 +2029,22 @@ function sortTable(col) {{
                     tree_html, is_trunc, total_p = render_tree_view_html(df_for_sku, tree_search, is_fullscreen=False)
                     components.html(tree_html, height=335)
                     if is_trunc:
-                        st.caption(f"* แสดง 100 อันดับแรกจากทั้งหมด {total_p:,} สินค้า (พิมพ์ค้นหาในช่องด้านบนเพื่อดูสินค้าอื่นเพิ่มเติม)")
+                        st.caption(f"* แสดง 100 อันดับแรกจากทั้งหมด {total_p:,} สินค้า (กดปุ่ม '📥 ส่งออก Excel' เพื่อดูข้อมูลครบ 100% ทุกรายการ)")
                     
                 with tab_grid:
-                    col_s_title, col_s_btn = st.columns([3.2, 1.2])
+                    col_s_title, col_s_exp, col_s_btn = st.columns([2.4, 1.1, 1.2])
                     with col_s_title:
                         st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
+                    with col_s_exp:
+                        excel_grid = export_sku_to_excel(disp_sku)
+                        st.download_button(
+                            label="📥 ส่งออก Excel",
+                            data=excel_grid,
+                            file_name=f"SKU_Summary_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="btn_sku_grid_export_excel",
+                            use_container_width=True
+                        )
                     with col_s_btn:
                         if st.button("⛶ ขยายเต็มหน้าจอ", key="btn_sku_full", use_container_width=True):
                             open_fullscreen_sku_dialog()
