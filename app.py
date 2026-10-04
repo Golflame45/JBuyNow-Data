@@ -1069,13 +1069,13 @@ if check_password():
         rev_per_buyer = (rev / buy) if buy > 0 else 0
         aov = (rev / orders) if orders > 0 else (rev / buy if buy > 0 else 0)
 
-        kpi1.metric("Revenue (ยอดขาย)", f"{rev:,.0f}")
+        kpi1.metric("ยอดรวมยืนยัน", f"฿ {rev:,.0f}")
         kpi2.metric("SKU Visitors", f"{vis:,.0f}")
-        kpi3.metric("SKU CR%", f"{cr*100:,.2f}%")
-        kpi4.metric("Rev per Buyers", f"{rev_per_buyer:,.0f}")
-        kpi5.metric("AOV", f"{aov:,.0f}")
-        kpi6.metric("Buyers (ผู้ซื้อ)", f"{buy:,.0f}")
-        kpi7.metric("Units Sold", f"{unit:,.0f}")
+        kpi3.metric("CR บนยอดยืนยัน", f"{cr*100:,.2f}%")
+        kpi4.metric("Rev per Buyers", f"฿ {rev_per_buyer:,.0f}")
+        kpi5.metric("AOV ยืนยัน", f"฿ {aov:,.0f}")
+        kpi6.metric("ออเดอร์ยืนยัน", f"{orders:,.0f}")
+        kpi7.metric("Qty ยืนยัน", f"{unit:,.0f}")
 
         st.markdown("---")
 
@@ -1107,12 +1107,18 @@ if check_password():
         if selected_cats_table: df_for_month = df_for_month[df_for_month['Category_Desc'].isin(selected_cats_table)]
         if selected_skus: df_for_month = df_for_month[df_for_month['SKU'].isin(selected_skus)]
         # Note: Do NOT filter df_for_month by selected_days to ensure Order Month never collapses to 1 row
-        disp_monthly = df_for_month.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index()
+        disp_monthly = df_for_month.groupby('Month').agg({
+            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum'
+        }).reset_index()
         all_months_list = sorted(filtered_df['Month'].dropna().unique().tolist())
         all_months_df = pd.DataFrame({'Month': all_months_list})
-        disp_monthly = all_months_df.merge(disp_monthly, on='Month', how='left').fillna({'Revenue': 0.0, 'Visitors': 0.0})
+        disp_monthly = all_months_df.merge(disp_monthly, on='Month', how='left').fillna({
+            'Revenue': 0.0, 'Visitors': 0.0, 'Buyers': 0.0, 'Units_Sold': 0.0, 'Orders': 0.0
+        })
         total_m_rev = disp_monthly['Revenue'].sum()
         disp_monthly['% Rev'] = (disp_monthly['Revenue'] / total_m_rev * 100).fillna(0) if total_m_rev > 0 else 0.0
+        disp_monthly['Avg CR'] = (disp_monthly['Buyers'] / disp_monthly['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
+        disp_monthly['AOV'] = (disp_monthly['Revenue'] / disp_monthly['Orders']).replace([np.inf, -np.inf], 0).fillna(0)
         st.session_state['tb_month_rendered_ids'] = disp_monthly['Month'].tolist()
 
         # 2. Product Group (Filtered by Month, Day, SKU - but not Cat itself)
@@ -1121,11 +1127,12 @@ if check_password():
         if selected_days: df_for_cat = df_for_cat[df_for_cat['Day'].isin(selected_days)]
         if selected_skus: df_for_cat = df_for_cat[df_for_cat['SKU'].isin(selected_skus)]
         disp_cat = df_for_cat.groupby('Category_Desc').agg({
-            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'
+            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum', 'A2C': 'sum'
         }).reset_index()
         disp_cat = disp_cat[(disp_cat['Revenue'] > 0) | (disp_cat['Visitors'] > 0) | (disp_cat['A2C'] > 0)]
         disp_cat['Avg CR'] = (disp_cat['Buyers'] / disp_cat['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
         disp_cat['Avg Price'] = (disp_cat['Revenue'] / disp_cat['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
+        disp_cat['AOV'] = (disp_cat['Revenue'] / disp_cat['Orders']).replace([np.inf, -np.inf], 0).fillna(0)
         disp_cat = disp_cat.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
         st.session_state['tb_cat_rendered_ids'] = disp_cat['Category_Desc'].tolist()
 
@@ -1134,9 +1141,13 @@ if check_password():
         if selected_months: df_for_day = df_for_day[df_for_day['Month'].isin(selected_months)]
         if selected_cats_table: df_for_day = df_for_day[df_for_day['Category_Desc'].isin(selected_cats_table)]
         if selected_skus: df_for_day = df_for_day[df_for_day['SKU'].isin(selected_skus)]
-        disp_daily = df_for_day.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index()
+        disp_daily = df_for_day.groupby('Day').agg({
+            'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum'
+        }).reset_index()
         disp_daily = disp_daily[(disp_daily['Revenue'] > 0) | (disp_daily['Visitors'] > 0)].sort_values('DateObj')
         disp_daily['Date'] = pd.to_datetime(disp_daily['DateObj']).dt.date
+        disp_daily['Avg CR'] = (disp_daily['Buyers'] / disp_daily['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
+        disp_daily['AOV'] = (disp_daily['Revenue'] / disp_daily['Orders']).replace([np.inf, -np.inf], 0).fillna(0)
         st.session_state['tb_day_rendered_ids'] = disp_daily['Day'].tolist()
 
         # 4. SKU Code (Filtered by Month, Cat, Day - but not SKU itself)
@@ -1152,61 +1163,70 @@ if check_password():
 
         disp_sku = df_for_sku.groupby('SKU').agg({
             'Product': 'first',
-            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum',
+            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum', 'A2C': 'sum',
             'Stock_Available': 'first'
         }).reset_index()
         disp_sku = disp_sku[(disp_sku['Revenue'] > 0) | (disp_sku['Visitors'] > 0) | (disp_sku['A2C'] > 0)]
         disp_sku['Avg CR'] = (disp_sku['Buyers'] / disp_sku['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
         disp_sku['Avg Price'] = (disp_sku['Revenue'] / disp_sku['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
+        disp_sku['AOV'] = (disp_sku['Revenue'] / disp_sku['Orders']).replace([np.inf, -np.inf], 0).fillna(0)
         disp_sku = disp_sku.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
         st.session_state['tb_sku_rendered_ids'] = disp_sku['SKU'].tolist()
 
         # Explicit column configurations with fixed widths to prevent Glide Data Grid layout shifts
         col_config_month = {
             "Month": st.column_config.TextColumn("Month", width="small"),
-            "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f", width="medium"),
-            "% Rev": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100, width="small"),
-            "Visitors": st.column_config.NumberColumn("Visitors", format="%,d", width="small")
+            "Revenue": st.column_config.NumberColumn("ยอดรวมยืนยัน (฿)", format="%,.2f", width="medium"),
+            "Units_Sold": st.column_config.NumberColumn("Qty ยืนยัน", format="%,d", width="small"),
+            "Orders": st.column_config.NumberColumn("ออเดอร์ยืนยัน", format="%,d", width="small"),
+            "Avg CR": st.column_config.NumberColumn("CR บนยอดยืนยัน", format="%.2f%%", width="small"),
+            "% Rev": st.column_config.ProgressColumn("% สัดส่วน", format="%.1f%%", min_value=0, max_value=100, width="small"),
+            "Visitors": st.column_config.NumberColumn("ผู้เข้าชม", format="%,d", width="small")
         }
 
         col_config_cat = {
             "Category_Desc": st.column_config.TextColumn("หมวดหมู่สินค้า (Category)", width="large"),
-            "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f", width="medium"),
-            "Avg CR": st.column_config.NumberColumn("CR", format="%.2f%%", width="small"),
-            "Visitors": st.column_config.NumberColumn("Visitors", format="%,d", width="small"),
-            "Avg Price": st.column_config.NumberColumn("Avg Price", format="%,.2f", width="small"),
-            "A2C": st.column_config.NumberColumn("A2C", format="%,d", width="small"),
-            "Buyers": st.column_config.NumberColumn("Buyers", format="%,d", width="small"),
-            "Units_Sold": st.column_config.NumberColumn("Units", format="%,d", width="small")
+            "Revenue": st.column_config.NumberColumn("ยอดรวมยืนยัน (฿)", format="%,.2f", width="medium"),
+            "Units_Sold": st.column_config.NumberColumn("Qty ยืนยัน", format="%,d", width="small"),
+            "Orders": st.column_config.NumberColumn("ออเดอร์ยืนยัน", format="%,d", width="small"),
+            "Avg CR": st.column_config.NumberColumn("CR บนยอดยืนยัน", format="%.2f%%", width="small"),
+            "Avg Price": st.column_config.NumberColumn("ราคาเฉลี่ย/ชิ้น", format="%,.2f", width="small"),
+            "Visitors": st.column_config.NumberColumn("ผู้เข้าชม", format="%,d", width="small"),
+            "Buyers": st.column_config.NumberColumn("ผู้ซื้อ", format="%,d", width="small"),
+            "A2C": st.column_config.NumberColumn("ตะกร้า (A2C)", format="%,d", width="small")
         }
 
         col_config_day = {
             "Date": st.column_config.DateColumn("Date (วันที่)", format="DD/MM/YYYY", width="medium"),
-            "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f", width="medium"),
-            "Visitors": st.column_config.NumberColumn("Visitors", format="%,d", width="small"),
-            "Buyers": st.column_config.NumberColumn("Buyers", format="%,d", width="small"),
-            "Units_Sold": st.column_config.NumberColumn("Units", format="%,d", width="small")
+            "Revenue": st.column_config.NumberColumn("ยอดรวมยืนยัน (฿)", format="%,.2f", width="medium"),
+            "Units_Sold": st.column_config.NumberColumn("Qty ยืนยัน", format="%,d", width="small"),
+            "Orders": st.column_config.NumberColumn("ออเดอร์ยืนยัน", format="%,d", width="small"),
+            "Avg CR": st.column_config.NumberColumn("CR บนยอดยืนยัน", format="%.2f%%", width="small"),
+            "AOV": st.column_config.NumberColumn("AOV ยืนยัน", format="%,.2f", width="small"),
+            "Visitors": st.column_config.NumberColumn("ผู้เข้าชม", format="%,d", width="small"),
+            "Buyers": st.column_config.NumberColumn("ผู้ซื้อ", format="%,d", width="small")
         }
 
         col_config_sku = {
             "SKU": st.column_config.TextColumn("SKU Code", width="medium"),
             "Product": st.column_config.TextColumn("ชื่อสินค้า (Description)", width="large"),
-            "Revenue": st.column_config.NumberColumn("Revenue", format="%,.2f", width="medium"),
-            "Avg CR": st.column_config.NumberColumn("CR", format="%.2f%%", width="small"),
-            "Visitors": st.column_config.NumberColumn("Visitors", format="%,d", width="small"),
-            "A2C": st.column_config.NumberColumn("A2C", format="%,d", width="small"),
-            "Avg Price": st.column_config.NumberColumn("Avg Price", format="%,.2f", width="small"),
-            "Buyers": st.column_config.NumberColumn("Buyers", format="%,d", width="small"),
-            "Units_Sold": st.column_config.NumberColumn("Units", format="%,d", width="small"),
+            "Revenue": st.column_config.NumberColumn("ยอดรวมยืนยัน (฿)", format="%,.2f", width="medium"),
+            "Units_Sold": st.column_config.NumberColumn("Qty ยืนยัน", format="%,d", width="small"),
+            "Orders": st.column_config.NumberColumn("ออเดอร์ยืนยัน", format="%,d", width="small"),
+            "Avg CR": st.column_config.NumberColumn("CR บนยอดยืนยัน", format="%.2f%%", width="small"),
+            "Avg Price": st.column_config.NumberColumn("ราคาเฉลี่ย/ชิ้น", format="%,.2f", width="small"),
+            "Visitors": st.column_config.NumberColumn("ผู้เข้าชม", format="%,d", width="small"),
+            "A2C": st.column_config.NumberColumn("ตะกร้า (A2C)", format="%,d", width="small"),
+            "Buyers": st.column_config.NumberColumn("ผู้ซื้อ", format="%,d", width="small"),
             "Stock_Available": st.column_config.NumberColumn("Stock", format="%d ชิ้น", width="small")
         }
 
         # Middle Row (Fixed height 320px for perfect alignment & zero layout jump)
-        col_m1, col_m2, col_m3 = st.columns([1.2, 1.8, 2.5])
+        col_m1, col_m2, col_m3 = st.columns([1.5, 1.6, 2.5])
         with col_m1:
             st.write("**Order Month**")
             st.dataframe(
-                disp_monthly[['Month', 'Revenue', '% Rev', 'Visitors']], 
+                disp_monthly[['Month', 'Revenue', 'Units_Sold', 'Orders', 'Avg CR', '% Rev', 'Visitors']], 
                 hide_index=True, use_container_width=True, height=320,
                 on_select="rerun", selection_mode="multi-row", key="tb_month",
                 column_config=col_config_month
@@ -1229,7 +1249,7 @@ if check_password():
         with col_m3:
             st.write("**Product Group (หมวดหมู่สินค้า)**")
             st.dataframe(
-                disp_cat[['Category_Desc', 'Revenue', 'Avg CR', 'Visitors', 'Avg Price', 'A2C', 'Buyers', 'Units_Sold']], 
+                disp_cat[['Category_Desc', 'Revenue', 'Units_Sold', 'Orders', 'Avg CR', 'Avg Price', 'Visitors', 'A2C']], 
                 hide_index=True, use_container_width=True, height=320,
                 on_select="rerun", selection_mode="multi-row", key="tb_cat",
                 column_config=col_config_cat
@@ -1237,15 +1257,16 @@ if check_password():
 
         st.markdown("---")
         # Bottom Row (Fixed height 380px for perfect alignment & zero layout jump)
-        col_d1, col_d2 = st.columns([1.5, 2.5])
+        col_d1, col_d2 = st.columns([1.8, 2.2])
         with col_d1:
             st.write("**Order Date (รายวัน)**")
             st.dataframe(
-                disp_daily[['Date', 'Revenue', 'Visitors', 'Buyers', 'Units_Sold']], 
+                disp_daily[['Date', 'Revenue', 'Units_Sold', 'Orders', 'Avg CR', 'AOV', 'Visitors']], 
                 hide_index=True, use_container_width=True, height=380,
                 on_select="rerun", selection_mode="multi-row", key="tb_day",
                 column_config=col_config_day
             )
+
         def render_tree_view_html(df_input, search_term=""):
             if df_input.empty:
                 empty_html = """<!DOCTYPE html><html><body style="background:transparent;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#888;display:flex;align-items:center;justify-content:center;height:100px;"><p>ไม่มีข้อมูลสินค้าตามตัวกรองที่เลือก</p></body></html>"""
@@ -1607,11 +1628,11 @@ if check_password():
 <div class="container" id="treeContainer">
   <div class="row header-row">
     <div class="col-prod sortable-header" onclick="sortTable('name')" title="คลิกเพื่อเรียงตามชื่อสินค้า / SKU">สินค้า / รหัส SKU <span id="sort-name" class="sort-icon"></span></div>
-    <div class="col-rev sortable-header" onclick="sortTable('rev')" title="คลิกเพื่อเรียงตามยอดขาย">ยอดขาย (฿) <span id="sort-rev" class="sort-icon">▼</span></div>
-    <div class="col-cr sortable-header" onclick="sortTable('cr')" title="คลิกเพื่อเรียงตาม CR">CR (%) <span id="sort-cr" class="sort-icon"></span></div>
+    <div class="col-rev sortable-header" onclick="sortTable('rev')" title="คลิกเพื่อเรียงตามยอดรวมยืนยัน">ยอดรวมยืนยัน (฿) <span id="sort-rev" class="sort-icon">▼</span></div>
+    <div class="col-cr sortable-header" onclick="sortTable('cr')" title="คลิกเพื่อเรียงตาม CR บนยอดยืนยัน">CR บนยอดยืนยัน <span id="sort-cr" class="sort-icon"></span></div>
     <div class="col-vis sortable-header" onclick="sortTable('vis')" title="คลิกเพื่อเรียงตามคนเข้าชม">คนเข้าชม <span id="sort-vis" class="sort-icon"></span></div>
     <div class="col-a2c sortable-header" onclick="sortTable('a2c')" title="คลิกเพื่อเรียงตามตะกร้า">ตะกร้า (A2C) <span id="sort-a2c" class="sort-icon"></span></div>
-    <div class="col-unit sortable-header" onclick="sortTable('unit')" title="คลิกเพื่อเรียงตามชิ้นที่ขาย">ชิ้นที่ขาย <span id="sort-unit" class="sort-icon"></span></div>
+    <div class="col-unit sortable-header" onclick="sortTable('unit')" title="คลิกเพื่อเรียงตาม Qty ยืนยัน">Qty ยืนยัน <span id="sort-unit" class="sort-icon"></span></div>
     <div class="col-stock sortable-header" onclick="sortTable('stock')" title="คลิกเพื่อเรียงตามสต็อก">สต็อก <span id="sort-stock" class="sort-icon"></span></div>
   </div>
   <div id="treeRows">
