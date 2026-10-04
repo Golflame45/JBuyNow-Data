@@ -1025,11 +1025,13 @@ if check_password():
         sel_shops = st.multiselect("ร้านค้า (Shop)", shop_list, default=shop_list)
 
     with col_p3:
-        all_years = sorted(base_df['Year'].unique())
+        available_years_df = base_df if sel_platform == 'ทั้งหมด (All)' else base_df[base_df['Platform'] == sel_platform]
+        all_years = sorted(available_years_df['Year'].unique().tolist())
         selected_years = st.multiselect("ปี (Year)", all_years, default=all_years)
 
     with col_p4:
-        all_cats = sorted([str(s) for s in base_df['Category_Desc'].dropna().unique() if str(s).strip() not in ['-', 'nan', 'NaN', 'None', '']])
+        available_cats_df = available_years_df
+        all_cats = sorted([str(s) for s in available_cats_df['Category_Desc'].dropna().unique() if str(s).strip() not in ['-', 'nan', 'NaN', 'None', '']])
         selected_cats = st.multiselect("หมวดหมู่สินค้า (Category)", all_cats)
 
     filtered_df = base_df.copy()
@@ -1138,6 +1140,10 @@ if check_password():
             else:
                 st.button("🔄 ล้างตัวกรอง (Reset)", use_container_width=True, disabled=True)
 
+        if filtered_df.empty:
+            st.info("ℹ️ **ไม่พบข้อมูลยอดขายตามเงื่อนไขตัวกรองที่เลือก** (กรุณาลองปรับเปลี่ยนตัวกรอง เช่น Lazada มีข้อมูลเฉพาะในปี 2026)")
+            return
+
         # 1. Order Month (Macro time overview - preserved with full month list)
         df_for_month = filtered_df.copy()
         if selected_cats_table: df_for_month = df_for_month[df_for_month['Category_Desc'].isin(selected_cats_table)]
@@ -1147,10 +1153,14 @@ if check_password():
             'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum'
         }).reset_index()
         all_months_list = sorted(filtered_df['Month'].dropna().unique().tolist())
-        all_months_df = pd.DataFrame({'Month': all_months_list})
-        disp_monthly = all_months_df.merge(disp_monthly, on='Month', how='left').fillna({
-            'Revenue': 0.0, 'Visitors': 0.0, 'Buyers': 0.0, 'Units_Sold': 0.0, 'Orders': 0.0
-        })
+        all_months_df = pd.DataFrame({'Month': pd.Series(all_months_list, dtype='object')})
+        if not disp_monthly.empty:
+            disp_monthly['Month'] = disp_monthly['Month'].astype(str)
+            disp_monthly = all_months_df.merge(disp_monthly, on='Month', how='left').fillna({
+                'Revenue': 0.0, 'Visitors': 0.0, 'Buyers': 0.0, 'Units_Sold': 0.0, 'Orders': 0.0
+            })
+        else:
+            disp_monthly = pd.DataFrame(columns=['Month', 'Revenue', 'Visitors', 'Buyers', 'Units_Sold', 'Orders', '% Rev', 'Avg CR', 'AOV'])
         total_m_rev = disp_monthly['Revenue'].sum()
         disp_monthly['% Rev'] = (disp_monthly['Revenue'] / total_m_rev * 100).fillna(0) if total_m_rev > 0 else 0.0
         disp_monthly['Avg CR'] = (disp_monthly['Buyers'] / disp_monthly['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
