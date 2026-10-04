@@ -963,26 +963,7 @@ if check_password():
             width: 100% !important;
         }
 
-        /* 3b. Fullscreen Mode for st.dataframe & GlideDataGrid (Fill entire screen with rows!) */
-        div[data-testid="stFullScreenFrame"] {
-            padding: 12px 18px !important;
-            background: var(--background-color, #0e1117) !important;
-        }
-        div[data-testid="stFullScreenFrame"] div[data-testid="stDataFrame"],
-        div[data-testid="stFullScreenFrame"] div[data-testid="stDataFrame"] > div,
-        div[data-testid="stFullScreenFrame"] div[data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {
-            height: calc(100vh - 75px) !important;
-            max-height: calc(100vh - 75px) !important;
-            min-height: calc(100vh - 75px) !important;
-        }
-        div[data-testid="stFullScreenFrame"] div[data-testid="stDataFrame"] .dvn-scroller,
-        div[data-testid="stFullScreenFrame"] div[data-testid="stDataFrame"] canvas {
-            height: 100% !important;
-            max-height: calc(100vh - 90px) !important;
-            min-height: calc(100vh - 90px) !important;
-        }
-
-        /* 3c. Fullscreen Dialog (96vw x 92vh) for Tree View & SKU Data Grid */
+        /* 3b. Fullscreen Dialog (96vw x 92vh) for Tree View & SKU Data Grid */
         div[data-testid="stDialog"] div[role="dialog"] {
             width: 96vw !important;
             max-width: 96vw !important;
@@ -1022,6 +1003,12 @@ if check_password():
             display: flex; justify-content: space-between; align-items: center;
         }
         [data-testid="stMetricValue"] { font-size: 24px !important; }
+        [data-testid="stMetricLabel"], [data-testid="stMetricLabel"] * {
+            font-size: 13px !important;
+            font-weight: 600 !important;
+            min-height: 20px !important;
+            line-height: 1.4 !important;
+        }
         [data-testid="stMetric"] {
             border: 1px solid var(--secondary-background-color); 
             padding: 10px; border-radius: 6px;
