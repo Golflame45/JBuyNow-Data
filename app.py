@@ -190,8 +190,44 @@ if check_password():
         
         # Detect Platform
         name_check = f"{folder_name}/{file_name}".lower()
-        if "tiktok" in name_check or "tt" in name_check:
+        if "tiktok" in name_check or "tt" in name_check or "69.xlsx" in file_name:
+            header_row = 2
+            if len(raw_df) > header_row:
+                headers_list = [str(c).strip() for c in raw_df.iloc[header_row].tolist()]
+                df = raw_df.iloc[header_row+1:].copy()
+                df.columns = headers_list
+                p_id_col = next((c for c in df.columns if 'รหัสสินค้า' in c), None)
+                p_name_col = next((c for c in df.columns if 'ชื่อสินค้า' in c), None)
+                vis_col = next((c for c in df.columns if c == 'ผู้ชม'), None) or next((c for c in df.columns if 'ผู้ชม' in c), None)
+                order_col = next((c for c in df.columns if 'คำสั่งซื้อ SKU' in c), None) or next((c for c in df.columns if 'คำสั่งซื้อ' in c), None)
+                buyer_col = next((c for c in df.columns if c == 'ลูกค้า'), None) or next((c for c in df.columns if 'ลูกค้า' in c and 'รถเข็น' not in c), None)
+                a2c_col = next((c for c in df.columns if 'ลูกค้าที่เพิ่มสินค้าในรถเข็น' in c), None) or next((c for c in df.columns if 'รถเข็น' in c), None)
+                rev_col = next((c for c in df.columns if 'gmv' in c.lower() and 'เนื้อหา' not in c), None)
+                
+                def to_num_tt(s):
+                    if s is None or s not in df.columns: return pd.Series(0.0, index=df.index)
+                    return pd.to_numeric(df[s].astype(str).str.replace(',', '', regex=False).str.replace('-', '0', regex=False).str.strip(), errors='coerce').fillna(0.0)
+                    
+                sku_s = df[p_id_col].astype(str).str.strip() if p_id_col else pd.Series('TT-Unknown', index=df.index)
+                name_s = df[p_name_col].astype(str).str.strip() if p_name_col else pd.Series('TikTok Product', index=df.index)
+                
+                clean_df = pd.DataFrame({
+                    'Platform': 'TikTok',
+                    'Shop_Name': 'JBuyNow',
+                    'Date': date_str,
+                    'SKU': sku_s,
+                    'Parent_SKU': sku_s,
+                    'Product': name_s,
+                    'Revenue': to_num_tt(rev_col),
+                    'Visitors': to_num_tt(vis_col),
+                    'Buyers': to_num_tt(buyer_col),
+                    'Units_Sold': to_num_tt(order_col),
+                    'A2C': to_num_tt(a2c_col),
+                    'Orders': to_num_tt(order_col)
+                })
+                return clean_df[(clean_df['Revenue'] > 0) | (clean_df['Visitors'] > 0) | (clean_df['Buyers'] > 0) | (clean_df['Units_Sold'] > 0) | (clean_df['A2C'] > 0)]
             return pd.DataFrame()
+
         platform = "Lazada" if "lazada" in name_check or "laz" in name_check else "Shopee"
         
         # Detect Shop Name from folder name
