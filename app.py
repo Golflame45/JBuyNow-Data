@@ -877,9 +877,9 @@ if check_password():
 
             master_df['DateObj'] = parse_date_series(master_df['Date'])
             master_df = master_df.dropna(subset=['DateObj']).copy()
-            # Strict date boundaries: eliminate future dates (beyond today) and legacy pre-2026 data
+            # Date boundaries: allow historical years (2024, 2025, 2026) and eliminate future dates (beyond today)
             today_cutoff = pd.Timestamp.now() + pd.Timedelta(days=1)
-            master_df = master_df[(master_df['DateObj'] >= '2026-01-01') & (master_df['DateObj'] <= today_cutoff)].copy()
+            master_df = master_df[(master_df['DateObj'] >= '2020-01-01') & (master_df['DateObj'] <= today_cutoff)].copy()
 
             if 'Stock_Available' not in master_df.columns:
                 master_df['Stock_Available'] = 0.0
