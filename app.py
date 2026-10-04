@@ -963,6 +963,40 @@ if check_password():
             width: 100% !important;
         }
 
+        /* 3b. Fullscreen Mode for st.dataframe & GlideDataGrid (Fill entire screen with rows!) */
+        div[data-testid="stFullScreenFrame"] {
+            padding: 12px 18px !important;
+            background: var(--background-color, #0e1117) !important;
+        }
+        div[data-testid="stFullScreenFrame"] div[data-testid="stDataFrame"],
+        div[data-testid="stFullScreenFrame"] div[data-testid="stDataFrame"] > div,
+        div[data-testid="stFullScreenFrame"] div[data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {
+            height: calc(100vh - 75px) !important;
+            max-height: calc(100vh - 75px) !important;
+            min-height: calc(100vh - 75px) !important;
+        }
+        div[data-testid="stFullScreenFrame"] div[data-testid="stDataFrame"] .dvn-scroller,
+        div[data-testid="stFullScreenFrame"] div[data-testid="stDataFrame"] canvas {
+            height: 100% !important;
+            max-height: calc(100vh - 90px) !important;
+            min-height: calc(100vh - 90px) !important;
+        }
+
+        /* 3c. Fullscreen Dialog (96vw x 92vh) for Tree View & SKU Data Grid */
+        div[data-testid="stDialog"] div[role="dialog"] {
+            width: 96vw !important;
+            max-width: 96vw !important;
+            height: 92vh !important;
+            max-height: 92vh !important;
+            border-radius: 10px !important;
+            padding: 16px 20px !important;
+        }
+        div[data-testid="stDialog"] div[role="dialog"] > div {
+            height: 100% !important;
+            display: flex !important;
+            flex-direction: column !important;
+        }
+
         /* 4. ANTI-LAYOUT-SHIFT: Strictly lock column widths & prevent flex expansion */
         @media (min-width: 768px) {
             div[data-testid="stHorizontalBlock"], .stHorizontalBlock {
@@ -1025,13 +1059,11 @@ if check_password():
         sel_shops = st.multiselect("ร้านค้า (Shop)", shop_list, default=shop_list)
 
     with col_p3:
-        available_years_df = base_df if sel_platform == 'ทั้งหมด (All)' else base_df[base_df['Platform'] == sel_platform]
-        all_years = sorted(available_years_df['Year'].unique().tolist())
+        all_years = sorted(base_df['Year'].unique().tolist())
         selected_years = st.multiselect("ปี (Year)", all_years, default=all_years)
 
     with col_p4:
-        available_cats_df = available_years_df
-        all_cats = sorted([str(s) for s in available_cats_df['Category_Desc'].dropna().unique() if str(s).strip() not in ['-', 'nan', 'NaN', 'None', '']])
+        all_cats = sorted([str(s) for s in base_df['Category_Desc'].dropna().unique() if str(s).strip() not in ['-', 'nan', 'NaN', 'None', '']])
         selected_cats = st.multiselect("หมวดหมู่สินค้า (Category)", all_cats)
 
     filtered_df = base_df.copy()
@@ -1140,10 +1172,6 @@ if check_password():
             else:
                 st.button("🔄 ล้างตัวกรอง (Reset)", use_container_width=True, disabled=True)
 
-        if filtered_df.empty:
-            st.info("ℹ️ **ไม่พบข้อมูลยอดขายตามเงื่อนไขตัวกรองที่เลือก** (กรุณาลองปรับเปลี่ยนตัวกรอง เช่น Lazada มีข้อมูลเฉพาะในปี 2026)")
-            return
-
         # 1. Order Month (Macro time overview - preserved with full month list)
         df_for_month = filtered_df.copy()
         if selected_cats_table: df_for_month = df_for_month[df_for_month['Category_Desc'].isin(selected_cats_table)]
@@ -1152,15 +1180,24 @@ if check_password():
         disp_monthly = df_for_month.groupby('Month').agg({
             'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum'
         }).reset_index()
-        all_months_list = sorted(filtered_df['Month'].dropna().unique().tolist())
+
+        # Build full month list from base_df for the chosen year(s)
+        year_mask = base_df['Year'].isin(selected_years) if selected_years else pd.Series(True, index=base_df.index)
+        all_months_list = sorted(base_df.loc[year_mask, 'Month'].dropna().unique().tolist())
+        if not all_months_list:
+            all_months_list = sorted(base_df['Month'].dropna().unique().tolist())
         all_months_df = pd.DataFrame({'Month': pd.Series(all_months_list, dtype='object')})
+
         if not disp_monthly.empty:
             disp_monthly['Month'] = disp_monthly['Month'].astype(str)
             disp_monthly = all_months_df.merge(disp_monthly, on='Month', how='left').fillna({
                 'Revenue': 0.0, 'Visitors': 0.0, 'Buyers': 0.0, 'Units_Sold': 0.0, 'Orders': 0.0
             })
         else:
-            disp_monthly = pd.DataFrame(columns=['Month', 'Revenue', 'Visitors', 'Buyers', 'Units_Sold', 'Orders', '% Rev', 'Avg CR', 'AOV'])
+            disp_monthly = all_months_df.copy()
+            for col in ['Revenue', 'Visitors', 'Buyers', 'Units_Sold', 'Orders']:
+                disp_monthly[col] = 0.0
+
         total_m_rev = disp_monthly['Revenue'].sum()
         disp_monthly['% Rev'] = (disp_monthly['Revenue'] / total_m_rev * 100).fillna(0) if total_m_rev > 0 else 0.0
         disp_monthly['Avg CR'] = (disp_monthly['Buyers'] / disp_monthly['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
@@ -1281,17 +1318,21 @@ if check_password():
             st.write("**Revenue Trend by FGMONTHYEAR**")
             chart_df = cross_df.groupby('Month').agg({'Revenue': 'sum'}).reset_index().sort_values('Month')
             if not chart_df.empty:
-                fig = px.line(chart_df, x='Month', y='Revenue', markers=True, text='Revenue', color_discrete_sequence=['#00d4ff'])
-                fig.update_traces(textposition="top center", texttemplate='%{text:.2s}')
-                fig.update_layout(
-                    margin=dict(l=0, r=0, t=10, b=0), height=320,
-                    xaxis_title="", yaxis_title="",
-                    xaxis=dict(showgrid=False), yaxis=dict(showgrid=False),
-                    transition={'duration': 0}
-                )
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                chart_df['Month'] = chart_df['Month'].astype(str)
+                chart_df = all_months_df.merge(chart_df, on='Month', how='left').fillna({'Revenue': 0.0})
             else:
-                st.markdown("<div style='height:320px; display:flex; align-items:center; justify-content:center; background:#fafafa; border-radius:6px; color:#888;'>ไม่มีข้อมูลแนวโน้มยอดขายตามตัวกรองนี้</div>", unsafe_allow_html=True)
+                chart_df = all_months_df.copy()
+                chart_df['Revenue'] = 0.0
+
+            fig = px.line(chart_df, x='Month', y='Revenue', markers=True, text='Revenue', color_discrete_sequence=['#00d4ff'])
+            fig.update_traces(textposition="top center", texttemplate='%{text:.2s}')
+            fig.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0), height=320,
+                xaxis_title="", yaxis_title="",
+                xaxis=dict(showgrid=False), yaxis=dict(showgrid=False),
+                transition={'duration': 0}
+            )
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         with col_m3:
             st.write("**Product Group (หมวดหมู่สินค้า)**")
             st.dataframe(
@@ -1313,7 +1354,7 @@ if check_password():
                 column_config=col_config_day
             )
 
-        def render_tree_view_html(df_input, search_term=""):
+        def render_tree_view_html(df_input, search_term="", is_fullscreen=False):
             if df_input.empty:
                 empty_html = """<!DOCTYPE html><html><body style="background:transparent;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#888;display:flex;align-items:center;justify-content:center;height:100px;"><p>ไม่มีข้อมูลสินค้าตามตัวกรองที่เลือก</p></body></html>"""
                 return empty_html, False, 0
@@ -1404,8 +1445,9 @@ if check_password():
 
             total_parents = len(parent_df)
             is_truncated = False
-            if not st_clean and total_parents > 100:
-                parent_df = parent_df.head(100)
+            max_limit = 500 if is_fullscreen else 100
+            if not st_clean and total_parents > max_limit:
+                parent_df = parent_df.head(max_limit)
                 is_truncated = True
 
             rows_html = []
@@ -1496,6 +1538,7 @@ if check_password():
                     """)
 
             all_rows = "".join(rows_html)
+            c_height = "700px" if is_fullscreen else "330px"
 
             full_html = f"""<!DOCTYPE html>
 <html>
@@ -1548,7 +1591,7 @@ if check_password():
     overflow: hidden;
   }}
   .container {{
-    height: 330px;
+    height: {c_height};
     overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -1737,9 +1780,42 @@ function sortTable(col) {{
             
             is_lazada_only = (filtered_df['Platform'].nunique() == 1 and filtered_df['Platform'].iloc[0] == 'Lazada')
 
+            @st.dialog("🌳 เจาะลึก Parent & Variants (Tree View - ขยายเต็มจอ)", width="large")
+            def open_fullscreen_tree_dialog():
+                col_dlg_s, col_dlg_b = st.columns([3, 1])
+                with col_dlg_s:
+                    dlg_s = st.text_input(
+                        "ค้นหาตามชื่อสินค้า / รหัส SKU",
+                        value=st.session_state.get('tree_search_term', ''),
+                        key="tree_search_term_dlg",
+                        placeholder="🔍 พิมพ์ชื่อสินค้า หรือ รหัส SKU เพื่อค้นหา...",
+                        label_visibility="collapsed"
+                    )
+                with col_dlg_b:
+                    if active_stock:
+                        st.markdown(f"<div style='text-align:right; font-size:13px; color:#0099ff; padding-top:6px;'>📦 สต็อก: {active_stock}</div>", unsafe_allow_html=True)
+                t_html, t_trunc, t_tot = render_tree_view_html(df_for_sku, dlg_s, is_fullscreen=True)
+                components.html(t_html, height=720, scrolling=True)
+                if t_trunc:
+                    st.caption(f"* แสดง 500 อันดับแรกจากทั้งหมด {t_tot:,} สินค้า (พิมพ์ค้นหาในช่องด้านบนเพื่อดูสินค้าอื่นเพิ่มเติม)")
+
+            @st.dialog("📋 ตารางสรุปราย SKU (Data Grid - ขยายเต็มจอ)", width="large")
+            def open_fullscreen_sku_dialog():
+                if active_stock:
+                    st.markdown(f"<div style='font-size:13px; color:#0099ff; margin-bottom:8px;'>📦 สต็อกอ้างอิง: {active_stock}</div>", unsafe_allow_html=True)
+                st.dataframe(
+                    disp_sku[['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
+                    hide_index=True, use_container_width=True, height=720,
+                    column_config=col_config_sku
+                )
+
             if is_lazada_only:
-                # 100% Classic Direct SKU Data Grid for Lazada
-                st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
+                col_laz_title, col_laz_btn = st.columns([3.2, 1.2])
+                with col_laz_title:
+                    st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
+                with col_laz_btn:
+                    if st.button("⛶ ขยายเต็มหน้าจอ", key="btn_laz_sku_full", use_container_width=True):
+                        open_fullscreen_sku_dialog()
                 st.dataframe(
                     disp_sku[['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
                     hide_index=True, use_container_width=True, height=380,
@@ -1753,7 +1829,7 @@ function sortTable(col) {{
                 ])
                 
                 with tab_tree:
-                    col_t_search, col_t_badge = st.columns([2, 1])
+                    col_t_search, col_t_btn, col_t_badge = st.columns([2.2, 1.3, 1.2])
                     with col_t_search:
                         tree_search = st.text_input(
                             "ค้นหาตามชื่อสินค้า / รหัส SKU", 
@@ -1761,17 +1837,25 @@ function sortTable(col) {{
                             placeholder="🔍 พิมพ์ชื่อสินค้า หรือ รหัส SKU เพื่อค้นหา...", 
                             label_visibility="collapsed"
                         )
+                    with col_t_btn:
+                        if st.button("⛶ ขยายเต็มหน้าจอ", key="btn_tree_full", use_container_width=True):
+                            open_fullscreen_tree_dialog()
                     with col_t_badge:
                         if active_stock:
                             st.markdown(f"<div style='text-align:right; font-size:12px; color:#0099ff; padding-top:6px;'>📦 สต็อก: {active_stock}</div>", unsafe_allow_html=True)
                     
-                    tree_html, is_trunc, total_p = render_tree_view_html(df_for_sku, tree_search)
+                    tree_html, is_trunc, total_p = render_tree_view_html(df_for_sku, tree_search, is_fullscreen=False)
                     components.html(tree_html, height=335)
                     if is_trunc:
                         st.caption(f"* แสดง 100 อันดับแรกจากทั้งหมด {total_p:,} สินค้า (พิมพ์ค้นหาในช่องด้านบนเพื่อดูสินค้าอื่นเพิ่มเติม)")
                     
                 with tab_grid:
-                    st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
+                    col_s_title, col_s_btn = st.columns([3.2, 1.2])
+                    with col_s_title:
+                        st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
+                    with col_s_btn:
+                        if st.button("⛶ ขยายเต็มหน้าจอ", key="btn_sku_full", use_container_width=True):
+                            open_fullscreen_sku_dialog()
                     st.dataframe(
                         disp_sku[['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
                         hide_index=True, use_container_width=True, height=340,
