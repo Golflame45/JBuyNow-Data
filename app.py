@@ -782,8 +782,10 @@ if check_password():
                             errors='coerce'
                         ).fillna(0)
                         stock_summary = stock_df.groupby('SKU')['Stock_Available'].sum().reset_index()
+                        if 'Stock_Available' in master_df.columns:
+                            master_df = master_df.drop(columns=['Stock_Available'])
                         master_df = master_df.merge(stock_summary, on='SKU', how='left')
-                        master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0)
+                        master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0.0)
                         active_stock_name = stock_item.get('name', '')
                         st.session_state['active_stock_file_name'] = active_stock_name
                 except Exception:
@@ -1379,8 +1381,20 @@ if check_password():
                     cp = get_common_prefix(skus)
                     parent_sku_dict[pid] = cp if len(cp) >= 2 else skus[0]
 
-            # Parent aggregation
-            parent_df = df_tree.groupby('Parent_ID').agg({
+            # Step 1: SKU-level aggregation (aggregating over dates for each unique SKU)
+            # Use 'first' for Stock_Available so stock is NEVER multiplied by the number of daily sales rows!
+            sku_agg = df_tree.groupby(['Parent_ID', 'SKU']).agg({
+                'Product': 'first',
+                'Revenue': 'sum',
+                'Visitors': 'sum',
+                'A2C': 'sum',
+                'Units_Sold': 'sum',
+                'Buyers': 'sum',
+                'Stock_Available': 'first'
+            }).reset_index()
+
+            # Step 2: Parent-level aggregation (summing unique stocks of distinct child variants)
+            parent_df = sku_agg.groupby('Parent_ID').agg({
                 'Product': 'first',
                 'Revenue': 'sum',
                 'Visitors': 'sum',
@@ -1399,16 +1413,8 @@ if check_password():
             variants_dict = {}
             multi_pids = set(parent_df.loc[parent_df['is_multi'], 'Parent_ID'])
             if multi_pids:
-                multi_rows = df_tree[df_tree['Parent_ID'].isin(multi_pids)]
-                child_agg = multi_rows.groupby(['Parent_ID', 'SKU']).agg({
-                    'Revenue': 'sum',
-                    'Visitors': 'sum',
-                    'A2C': 'sum',
-                    'Units_Sold': 'sum',
-                    'Buyers': 'sum',
-                    'Stock_Available': 'sum'
-                }).reset_index().sort_values('Revenue', ascending=False)
-                for pid, group in child_agg.groupby('Parent_ID'):
+                multi_rows = sku_agg[sku_agg['Parent_ID'].isin(multi_pids)].sort_values('Revenue', ascending=False)
+                for pid, group in multi_rows.groupby('Parent_ID'):
                     variants_dict[pid] = group
 
             st_clean = search_term.strip().lower()
