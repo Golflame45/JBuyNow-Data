@@ -53,23 +53,19 @@ ARCHIVE_FOLDER_ID = "1MrQq5V3CuRwrO1pp9ZDzdYdVMdizOPP7"
 # ================= 0. Authentication =================
 def check_password():
     def password_entered():
-        if st.session_state["password"] == "1234":
+        if st.session_state.get("password_input", "") == "1234":
             st.session_state["password_correct"] = True
-            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
-    if "password_correct" not in st.session_state:
-        st.markdown("<h2 style='text-align: center;'>🔒 กรุณาใส่รหัสผ่านเพื่อเข้าสู่ระบบ</h2>", unsafe_allow_html=True)
-        st.text_input("รหัสผ่าน", type="password", on_change=password_entered, key="password")
-        return False
-    elif not st.session_state["password_correct"]:
-        st.markdown("<h2 style='text-align: center;'>🔒 กรุณาใส่รหัสผ่านเพื่อเข้าสู่ระบบ</h2>", unsafe_allow_html=True)
-        st.text_input("รหัสผ่าน", type="password", on_change=password_entered, key="password")
-        st.error("❌ รหัสผ่านไม่ถูกต้องครับ")
-        return False
-    else:
+    if st.session_state.get("password_correct", False):
         return True
+
+    st.markdown("<h2 style='text-align: center;'>🔒 กรุณาใส่รหัสผ่านเพื่อเข้าสู่ระบบ</h2>", unsafe_allow_html=True)
+    st.text_input("รหัสผ่าน", type="password", on_change=password_entered, key="password_input")
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("❌ รหัสผ่านไม่ถูกต้องครับ")
+    return False
 
 if check_password():
 
