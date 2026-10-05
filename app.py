@@ -174,6 +174,13 @@ if check_password():
             d, m, y = m2b.groups()
             return f"{y}-{int(m):02d}-{int(d):02d}"
 
+        # Pattern 2c: 29-09-69 (Thai Buddhist Era 2-digit year 69 -> 2026)
+        m2c = re.search(r'(\d{1,2})[-_.](\d{2})[-_.](6\d)', file_name)
+        if m2c:
+            d, m, y_th = m2c.groups()
+            y_ce = 2500 + int(y_th) - 543
+            return f"{y_ce}-{int(m):02d}-{int(d):02d}"
+
         # Pattern 3: Search header content for Date Range
         if raw_df is not None:
             for r in range(min(5, len(raw_df))):
@@ -183,8 +190,41 @@ if check_password():
                     return m3.group(1)
         return None
 
+    @st.cache_data(ttl=3600)
+    def load_tiktok_mapping():
+        mapping_candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else '.', 'TikTok_SKU_Mapping.xlsx'),
+            r"c:\Users\user\Documents\antigravity\focused-bardeen\TikTok_SKU_Mapping.xlsx",
+            r"C:\Users\user\OneDrive\Personal\Consultant\JBuynow\Test Data\TikTok_SKU_Mapping.xlsx",
+            r"C:\Users\user\Downloads\ลิสรายการสินค้า tiktok ที่จะทำ affiliate Rev1.xlsx",
+            r"C:\Users\user\Downloads\TikTok_SKU_Mapping.xlsx"
+        ]
+        target_path = next((p for p in mapping_candidates if os.path.exists(p)), None)
+        if not target_path:
+            return {}
+        try:
+            xl = pd.ExcelFile(target_path)
+            mapping_dict = {}
+            for sheet in xl.sheet_names:
+                df_s = xl.parse(sheet)
+                sku_c = next((c for c in df_s.columns if str(c).strip().lower() == 'sku'), None)
+                name_c = next((c for c in df_s.columns if str(c).strip().lower() in ['ชื่อ', 'ชื่อสินค้า', 'name']), None)
+                if sku_c and name_c:
+                    for _, row in df_s.iterrows():
+                        sku_val = str(row[sku_c]).strip()
+                        name_val = str(row[name_c]).strip()
+                        if sku_val and sku_val != 'nan' and name_val and name_val != 'nan':
+                            sku_clean = sku_val.replace('\xa0', ' ').strip().split()[0]
+                            parent_prefix = sku_clean.split('-')[0] if '-' in sku_clean else sku_clean[:6]
+                            clean_name = name_val.strip().lower()
+                            if clean_name not in mapping_dict:
+                                mapping_dict[clean_name] = {'SKU': sku_clean, 'Parent_SKU': parent_prefix}
+            return mapping_dict
+        except Exception:
+            return {}
+
     # ================= 2. Multi-Channel Data Normalization =================
-    def parse_raw_sales_file(file_bytes, file_name, folder_name=""):
+    def parse_raw_sales_file(file_bytes, file_name, folder_name="", mapping_dict=None):
         raw_df = pd.read_excel(file_bytes, header=None) if not file_name.endswith('.csv') else pd.read_csv(file_bytes, header=None)
         date_str = extract_date_from_name_or_content(file_name, raw_df)
         
@@ -207,17 +247,31 @@ if check_password():
                 def to_num_tt(s):
                     if s is None or s not in df.columns: return pd.Series(0.0, index=df.index)
                     return pd.to_numeric(df[s].astype(str).str.replace(',', '', regex=False).str.replace('-', '0', regex=False).str.strip(), errors='coerce').fillna(0.0)
-                    
-                sku_s = df[p_id_col].astype(str).str.strip() if p_id_col else pd.Series('TT-Unknown', index=df.index)
-                name_s = df[p_name_col].astype(str).str.strip() if p_name_col else pd.Series('TikTok Product', index=df.index)
+                
+                p_ids = df[p_id_col].astype(str).str.strip() if p_id_col else pd.Series('TT-Unknown', index=df.index)
+                p_names = df[p_name_col].astype(str).str.strip() if p_name_col else pd.Series('TikTok Product', index=df.index)
+                
+                if mapping_dict is None:
+                    mapping_dict = load_tiktok_mapping()
+                
+                skus = []
+                parents = []
+                for pid, pname in zip(p_ids, p_names):
+                    cn = pname.strip().lower()
+                    if mapping_dict and cn in mapping_dict:
+                        skus.append(mapping_dict[cn]['SKU'])
+                        parents.append(mapping_dict[cn]['Parent_SKU'])
+                    else:
+                        skus.append(f"TT-{pid}")
+                        parents.append(f"TT-{pid}")
                 
                 clean_df = pd.DataFrame({
                     'Platform': 'TikTok',
                     'Shop_Name': 'JBuyNow',
                     'Date': date_str,
-                    'SKU': sku_s,
-                    'Parent_SKU': sku_s,
-                    'Product': name_s,
+                    'SKU': skus,
+                    'Parent_SKU': parents,
+                    'Product': p_names,
                     'Revenue': to_num_tt(rev_col),
                     'Visitors': to_num_tt(vis_col),
                     'Buyers': to_num_tt(buyer_col),
@@ -597,18 +651,20 @@ if check_password():
         if not force_rebuild and not master_df.empty and 'Date' in master_df.columns and 'Platform' in master_df.columns:
             existing_combos = set(zip(master_df['Platform'].astype(str), master_df['Date'].astype(str)))
 
+        tt_mapping = load_tiktok_mapping()
+
         for fid, fname, fpath in all_inbox_files:
-            if "tiktok" in fpath.lower() or "tiktok" in fname.lower() or "tt" in fpath.lower():
-                continue
             date_cand = extract_date_from_name_or_content(fname)
-            plat_cand = "Lazada" if ("lazada" in fpath.lower() or "laz" in fpath.lower() or "lazada" in fname.lower()) else "Shopee"
+            is_tt = "tiktok" in fpath.lower() or "tiktok" in fname.lower() or "tt" in fpath.lower() or "69.xlsx" in fname.lower()
+            is_laz = "lazada" in fpath.lower() or "laz" in fpath.lower() or "lazada" in fname.lower()
+            plat_cand = "TikTok" if is_tt else ("Lazada" if is_laz else "Shopee")
             # Skip downloading if already present in master and not force rebuilding
             if not force_rebuild and existing_combos and date_cand and (plat_cand, date_cand) in existing_combos:
                 continue
 
             try:
                 fb = download_file_bytes(service, fid)
-                df_parsed = parse_raw_sales_file(fb, fname, folder_name=fpath)
+                df_parsed = parse_raw_sales_file(fb, fname, folder_name=fpath, mapping_dict=tt_mapping)
                 if not df_parsed.empty:
                     new_dfs.append(df_parsed)
                     files_processed_count += 1
@@ -760,6 +816,11 @@ if check_password():
                         if 'Category_Desc' in master_df.columns:
                             master_df = master_df.drop(columns=['Category_Desc'])
                         master_df = master_df.merge(sku_map, on='SKU', how='left')
+                        
+                        is_tt = master_df['Platform'] == 'TikTok'
+                        is_unmapped_tt = is_tt & master_df['SKU'].astype(str).str.startswith('TT-')
+                        master_df.loc[is_unmapped_tt, 'Category_Desc'] = 'Unmapped (TikTok)'
+                        master_df['Category_Desc'] = master_df['Category_Desc'].fillna('Uncategorized')
                 except Exception:
                     pass
 
