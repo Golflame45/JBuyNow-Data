@@ -415,12 +415,12 @@ if check_password():
                 s = series.fillna('').astype(str).str.strip()
                 return s.replace({'nan': '', 'None': '', '-': ''})
 
-            p_id_col = next((c for c in df.columns if c.lower() in ['item id', 'product id', 'รหัสสินค้า']), None)
-            p_name_col = next((c for c in df.columns if c.lower() in ['product', 'product name', 'ชื่อสินค้า', 'ผลิตภัณฑ์', 'item name']), None)
-            v_id_col = next((c for c in df.columns if c.lower() in ['variation id', 'model id', 'รหัสตัวเลือกสินค้า']), None)
-            v_name_col = next((c for c in df.columns if c.lower() in ['variation name', 'model name', 'ชื่อตัวเลือกสินค้า']), None)
-            sku_col = next((c for c in df.columns if c.lower() in ['sku', 'seller sku', 'รหัสสินค้าตัวเลือก', 'รหัสสินค้า']), None)
-            psku_col = next((c for c in df.columns if c.lower() in ['parent sku', 'parent_sku']), None)
+            p_id_col = next((c for c in df.columns if c.strip().lower() in ['item id', 'product id', 'รหัสสินค้า']), None)
+            p_name_col = next((c for c in df.columns if c.strip().lower() in ['product', 'product name', 'ชื่อสินค้า', 'ผลิตภัณฑ์', 'item name']), None)
+            v_id_col = next((c for c in df.columns if c.strip().lower() in ['variation id', 'model id', 'รหัสตัวเลือกสินค้า']), None)
+            v_name_col = next((c for c in df.columns if c.strip().lower() in ['variation name', 'model name', 'ชื่อตัวเลือกสินค้า']), None)
+            sku_col = next((c for c in df.columns if c != p_id_col and c.strip().lower() in ['sku', 'seller sku', 'รหัสสินค้าตัวเลือก', 'เลขอ้างอิง sku', 'เลขอ้างอิง sku ของตัวเลือกสินค้า']), None)
+            psku_col = next((c for c in df.columns if c != p_id_col and c.strip().lower() in ['parent sku', 'parent_sku', 'เลขอ้างอิง parent sku', 'เลขอ้างอิง sku ของสินค้า']), None)
 
             # Prioritize Confirmed Order (ยืนยันแล้ว) to match Shopee Seller Centre Realized Sales
             rev_col = next((c for c in df.columns if 'sales' in c.lower() and 'confirmed' in c.lower() and 'per' not in c.lower()), None) or \
@@ -808,11 +808,21 @@ if check_password():
                         sku_master_df['SKU'] = sku_master_df[sku_col].astype(str).str.strip()
                         sku_master_df['Category_Desc'] = sku_master_df[cat_col].astype(str).str.strip()
                         sku_map = sku_master_df[['SKU', 'Category_Desc']].drop_duplicates(subset=['SKU'])
+                        
+                        # Build Prefix Map for intelligent fallback matching
+                        sku_master_df['SKU_Prefix'] = sku_master_df['SKU'].str.split('-').str[0]
+                        prefix_map = sku_master_df.groupby('SKU_Prefix')['Category_Desc'].first().to_dict()
+
                         master_df['SKU'] = master_df['SKU'].astype(str).str.strip()
                         if 'Category_Desc' in master_df.columns:
                             master_df = master_df.drop(columns=['Category_Desc'])
                         master_df = master_df.merge(sku_map, on='SKU', how='left')
                         
+                        # Step 2: Intelligent Prefix Fallback for new variants
+                        master_df['SKU_Prefix'] = master_df['SKU'].str.split('-').str[0]
+                        master_df['Category_Desc'] = master_df['Category_Desc'].fillna(master_df['SKU_Prefix'].map(prefix_map))
+                        master_df.drop(columns=['SKU_Prefix'], inplace=True, errors='ignore')
+
                         is_tt = master_df['Platform'] == 'TikTok'
                         is_unmapped_tt = is_tt & master_df['SKU'].astype(str).str.startswith('TT-')
                         master_df.loc[is_unmapped_tt, 'Category_Desc'] = 'Unmapped (TikTok)'
