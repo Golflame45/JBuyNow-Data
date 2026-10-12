@@ -9,6 +9,10 @@ import json
 import html as html_lib
 import streamlit.components.v1 as components
 from datetime import datetime, timezone, timedelta
+try:
+    from inventory_tab import render_inventory_valuation_tab
+except ImportError:
+    render_inventory_valuation_tab = None
 
 # Thai Timezone (UTC+7)
 BKK_TZ = timezone(timedelta(hours=7))
@@ -843,6 +847,8 @@ if check_password():
                     stock_col = next((c for c in stock_df.columns if any(k in str(c).strip().lower() for k in ['available', 'inventory', 'stock', 'on hand', 'qty', 'สต๊อก', 'พร้อมขาย'])), None)
                     
                     if sku_col and stock_col:
+                        stock_df = stock_df[~stock_df[sku_col].astype(str).str.contains('ผลรวม|total|grand', case=False, na=False)]
+                        stock_df = stock_df.dropna(subset=[sku_col])
                         stock_df['SKU'] = stock_df[sku_col].astype(str).str.strip()
                         stock_df['Stock_Available'] = pd.to_numeric(
                             stock_df[stock_col].astype(str).str.replace(',', '').str.replace('-', '0'), 
@@ -855,6 +861,7 @@ if check_password():
                         master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0.0)
                         active_stock_name = stock_item.get('name', '')
                         st.session_state['active_stock_file_name'] = active_stock_name
+                        st.session_state['raw_stock_df'] = stock_summary.copy()
                 except Exception:
                     pass
         else:
@@ -906,6 +913,8 @@ if check_password():
                                 sku_c = next((c for c in s_df.columns if str(c).strip().lower() in ['no.', 'no', 'item no.', 'sku', 'seller sku', 'รหัสสินค้า']), None)
                                 stk_c = next((c for c in s_df.columns if any(k in str(c).strip().lower() for k in ['available', 'inventory', 'stock', 'on hand', 'qty', 'สต๊อก', 'พร้อมขาย'])), None)
                                 if sku_c and stk_c:
+                                    s_df = s_df[~s_df[sku_c].astype(str).str.contains('ผลรวม|total|grand', case=False, na=False)]
+                                    s_df = s_df.dropna(subset=[sku_c])
                                     s_df['SKU'] = s_df[sku_c].astype(str).str.strip()
                                     s_df['Stock_Available'] = pd.to_numeric(s_df[stk_c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
                                     s_sum = s_df.groupby('SKU')['Stock_Available'].sum().reset_index()
@@ -916,6 +925,7 @@ if check_password():
                                     master_df['Stock_Available'] = master_df['Stock_Available'].fillna(0.0)
                                     active_stock_name = fn
                                     st.session_state['active_stock_file_name'] = active_stock_name
+                                    st.session_state['raw_stock_df'] = s_sum.copy()
                                     break
                             except: pass
                     if 'Stock_Available' in master_df.columns and master_df['Stock_Available'].sum() > 0:
@@ -1102,615 +1112,643 @@ if check_password():
         st.info("👋 **ระบบพร้อมทำงาน 100% แล้วครับ!**\n\nขณะนี้ยังไม่มีข้อมูลในระบบ ให้ทีมงานนำไฟล์ยอดขายรายวันไปหยอดไว้ในห้อง **`01_Drop_Inbox`** บน Google Drive จากนั้นกดปุ่ม **'🔄 ซิงก์ข้อมูลจาก Google Drive'** ที่แถบเมนูด้านซ้ายเพื่อเริ่มการคำนวณวันแรกได้ทันทีครับ!")
         st.stop()
 
-    # ================= 7. Global Filters =================
-    col_p1, col_p2, col_p3, col_p4 = st.columns([1, 1.5, 1, 2])
-    
-    with col_p1:
-        platforms = ['ทั้งหมด (All)'] + sorted(base_df['Platform'].unique().tolist())
-        sel_platform = st.selectbox("ช่องทาง (Platform)", platforms)
+    # ================= 6b. Main Navigation Tabs =================
+    tab_sales, tab_inventory = st.tabs([
+        "📈 วิเคราะห์ยอดขาย Omnichannel (Sales Performance)",
+        "📦 บริหารสต็อกสินค้า & มูลค่าคงคลัง (Inventory Valuation)"
+    ])
 
-    with col_p2:
-        available_shops = base_df if sel_platform == 'ทั้งหมด (All)' else base_df[base_df['Platform'] == sel_platform]
-        shop_list = sorted(available_shops['Shop_Name'].unique().tolist())
-        sel_shops = st.multiselect("ร้านค้า (Shop)", shop_list, default=shop_list)
-
-    with col_p3:
-        all_years = sorted(base_df['Year'].unique().tolist())
-        selected_years = st.multiselect("ปี (Year)", all_years, default=all_years)
-
-    with col_p4:
-        all_cats = sorted([str(s) for s in base_df['Category_Desc'].dropna().unique() if str(s).strip() not in ['-', 'nan', 'NaN', 'None', '']])
-        selected_cats = st.multiselect("หมวดหมู่สินค้า (Category)", all_cats)
-
-    filtered_df = base_df.copy()
-    if sel_platform != 'ทั้งหมด (All)':
-        filtered_df = filtered_df[filtered_df['Platform'] == sel_platform]
-    if sel_shops:
-        filtered_df = filtered_df[filtered_df['Shop_Name'].isin(sel_shops)]
-    if selected_years:
-        filtered_df = filtered_df[filtered_df['Year'].isin(selected_years)]
-    if selected_cats:
-        filtered_df = filtered_df[filtered_df['Category_Desc'].isin(selected_cats)]
-
-    # ================= 8. Interactive Dashboard Fragment =================
-    # Wrapped in @st.fragment so table clicks rerun ONLY the dashboard content,
-    # preventing full-page reloads, screen flickering, or jumping!
-    @st.fragment
-    def render_interactive_dashboard(filtered_df, active_stock_name=""):
-        monthly_base = filtered_df.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index().sort_values('Month')
-        cat_base = filtered_df.groupby('Category_Desc').agg({
-            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'
-        }).reset_index().sort_values('Revenue', ascending=False)
-        cat_base['Avg CR'] = (cat_base['Buyers'] / cat_base['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
-        cat_base['Avg Price'] = (cat_base['Revenue'] / cat_base['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
-
-        daily_base = filtered_df.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index().sort_values('DateObj')
-        daily_base['Date'] = pd.to_datetime(daily_base['DateObj']).dt.date
-        sku_base = filtered_df.groupby('SKU').agg({
-            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum',
-            'Stock_Available': 'first'
-        }).reset_index().sort_values('Revenue', ascending=False)
-        sku_base['Avg CR'] = (sku_base['Buyers'] / sku_base['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
-        sku_base['Avg Price'] = (sku_base['Revenue'] / sku_base['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
-
-        # Cross-Filtering Extraction
-        def get_selected_rows(key):
-            val = st.session_state.get(key)
-            if not val: return []
-            if isinstance(val, dict): return val.get('selection', {}).get('rows', [])
-            if hasattr(val, 'selection') and hasattr(val.selection, 'rows'): return val.selection.rows
-            try: return val['selection']['rows']
-            except: return []
-
-        def get_selected_items(key, id_col, fallback_df):
-            sel_idx = get_selected_rows(key)
-            if not sel_idx: return []
-            stored_ids = st.session_state.get(f"{key}_rendered_ids", [])
-            if stored_ids:
-                return [stored_ids[i] for i in sel_idx if i < len(stored_ids)]
-            elif id_col in fallback_df.columns:
-                return [fallback_df.iloc[i][id_col] for i in sel_idx if i < len(fallback_df)]
-            return []
-
-        selected_months = get_selected_items('tb_month', 'Month', monthly_base)
-        selected_cats_table = get_selected_items('tb_cat', 'Category_Desc', cat_base)
-        selected_days = get_selected_items('tb_day', 'Day', daily_base)
-        selected_skus = get_selected_items('tb_sku', 'SKU', sku_base)
-
-        cross_df = filtered_df.copy()
-        if selected_months: cross_df = cross_df[cross_df['Month'].isin(selected_months)]
-        if selected_cats_table: cross_df = cross_df[cross_df['Category_Desc'].isin(selected_cats_table)]
-        if selected_days: cross_df = cross_df[cross_df['Day'].isin(selected_days)]
-        if selected_skus: cross_df = cross_df[cross_df['SKU'].isin(selected_skus)]
-
-        # ================= 9. KPI Scorecards =================
-        st.markdown("---")
-        kpi1, kpi2, kpi3, kpi4, kpi5, kpi6, kpi7 = st.columns(7)
-        rev = cross_df['Revenue'].sum() if 'Revenue' in cross_df.columns else 0
-        vis = cross_df['Visitors'].sum() if 'Visitors' in cross_df.columns else 0
-        buy = cross_df['Buyers'].sum() if 'Buyers' in cross_df.columns else 0
-        unit = cross_df['Units_Sold'].sum() if 'Units_Sold' in cross_df.columns else 0
-        orders = cross_df['Orders'].sum() if 'Orders' in cross_df.columns else 0
-        cr = (buy / vis) if vis > 0 else 0
-        rev_per_buyer = (rev / buy) if buy > 0 else 0
-        aov = (rev / orders) if orders > 0 else (rev / buy if buy > 0 else 0)
-
-        kpi1.metric("ยอดรวมยืนยัน", f"฿ {rev:,.0f}")
-        kpi2.metric("SKU Visitors", f"{vis:,.0f}")
-        kpi3.metric("CR บนยอดยืนยัน", f"{cr*100:,.2f}%")
-        kpi4.metric("Rev per Buyers", f"฿ {rev_per_buyer:,.0f}")
-        kpi5.metric("AOV ยืนยัน", f"฿ {aov:,.0f}")
-        kpi6.metric("ออเดอร์ยืนยัน", f"{orders:,.0f}")
-        kpi7.metric("Qty ยืนยัน", f"{unit:,.0f}")
-
-        st.markdown("---")
-
-        # ================= 10. Display Tables with Symmetric Cross-Filtering =================
-        has_active_selection = bool(selected_months or selected_cats_table or selected_days or selected_skus)
-        col_rst1, col_rst2 = st.columns([4, 1])
-        with col_rst1:
-            if has_active_selection:
-                active_info = []
-                if selected_months: active_info.append(f"เดือน: {', '.join(selected_months)}")
-                if selected_cats_table: active_info.append(f"หมวดหมู่: {', '.join(selected_cats_table)}")
-                if selected_days: active_info.append(f"วันที่: {', '.join(selected_days)}")
-                if selected_skus: active_info.append(f"SKU: {', '.join(selected_skus[:3])}{'...' if len(selected_skus)>3 else ''}")
-                st.markdown(f"<div style='background-color:#e8f4fd; color:#0c5460; padding:8px 14px; border-radius:6px; font-size:14px; border:1px solid #bee5eb;'>🎯 <b>กำลังกรองข้อมูลตาม:</b> {' | '.join(active_info)}</div>", unsafe_allow_html=True)
-            else:
-                st.markdown("<div style='background-color:#f8f9fa; color:#6c757d; padding:8px 14px; border-radius:6px; font-size:14px; border:1px solid #e9ecef;'>💡 <i>คลิกเลือกแถวในตารางด้านล่างเพื่อ Cross-Filter กรองยอดขายและพฤติกรรมลูกค้า</i></div>", unsafe_allow_html=True)
-        with col_rst2:
-            if has_active_selection:
-                if st.button("🔄 ล้างตัวกรอง (Reset)", use_container_width=True):
-                    for k in ['tb_month', 'tb_cat', 'tb_day', 'tb_sku']:
-                        if k in st.session_state:
-                            del st.session_state[k]
-                    st.rerun()
-            else:
-                st.button("🔄 ล้างตัวกรอง (Reset)", use_container_width=True, disabled=True)
-
-        # 1. Order Month (Macro time overview - preserved with full month list)
-        df_for_month = filtered_df.copy()
-        if selected_cats_table: df_for_month = df_for_month[df_for_month['Category_Desc'].isin(selected_cats_table)]
-        if selected_skus: df_for_month = df_for_month[df_for_month['SKU'].isin(selected_skus)]
-        # Note: Do NOT filter df_for_month by selected_days to ensure Order Month never collapses to 1 row
-        disp_monthly = df_for_month.groupby('Month').agg({
-            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum'
-        }).reset_index()
-
-        # Build full month list from base_df for the chosen year(s)
-        year_mask = base_df['Year'].isin(selected_years) if selected_years else pd.Series(True, index=base_df.index)
-        all_months_list = sorted(base_df.loc[year_mask, 'Month'].dropna().unique().tolist())
-        if not all_months_list:
-            all_months_list = sorted(base_df['Month'].dropna().unique().tolist())
-        all_months_df = pd.DataFrame({'Month': pd.Series(all_months_list, dtype='object')})
-
-        if not disp_monthly.empty:
-            disp_monthly['Month'] = disp_monthly['Month'].astype(str)
-            disp_monthly = all_months_df.merge(disp_monthly, on='Month', how='left').fillna({
-                'Revenue': 0.0, 'Visitors': 0.0, 'Buyers': 0.0, 'Units_Sold': 0.0, 'Orders': 0.0
-            })
-        else:
-            disp_monthly = all_months_df.copy()
-            for col in ['Revenue', 'Visitors', 'Buyers', 'Units_Sold', 'Orders']:
-                disp_monthly[col] = 0.0
-
-        total_m_rev = disp_monthly['Revenue'].sum()
-        disp_monthly['% Rev'] = (disp_monthly['Revenue'] / total_m_rev * 100).fillna(0) if total_m_rev > 0 else 0.0
-        disp_monthly['Avg CR'] = (disp_monthly['Buyers'] / disp_monthly['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
-        disp_monthly['AOV'] = (disp_monthly['Revenue'] / disp_monthly['Orders']).replace([np.inf, -np.inf], 0).fillna(0)
-        st.session_state['tb_month_rendered_ids'] = disp_monthly['Month'].tolist()
-
-        # 2. Product Group (Filtered by Month, Day, SKU - but not Cat itself)
-        df_for_cat = filtered_df.copy()
-        if selected_months: df_for_cat = df_for_cat[df_for_cat['Month'].isin(selected_months)]
-        if selected_days: df_for_cat = df_for_cat[df_for_cat['Day'].isin(selected_days)]
-        if selected_skus: df_for_cat = df_for_cat[df_for_cat['SKU'].isin(selected_skus)]
-        disp_cat = df_for_cat.groupby('Category_Desc').agg({
-            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum', 'A2C': 'sum'
-        }).reset_index()
-        disp_cat = disp_cat[(disp_cat['Revenue'] > 0) | (disp_cat['Visitors'] > 0) | (disp_cat['A2C'] > 0)]
-        disp_cat['Avg CR'] = (disp_cat['Buyers'] / disp_cat['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
-        disp_cat['Avg Price'] = (disp_cat['Revenue'] / disp_cat['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
-        disp_cat['AOV'] = (disp_cat['Revenue'] / disp_cat['Orders']).replace([np.inf, -np.inf], 0).fillna(0)
-        disp_cat = disp_cat.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
-        st.session_state['tb_cat_rendered_ids'] = disp_cat['Category_Desc'].tolist()
-
-        # 3. Order Date (Filtered by Month, Cat, SKU - but not Day itself)
-        df_for_day = filtered_df.copy()
-        if selected_months: df_for_day = df_for_day[df_for_day['Month'].isin(selected_months)]
-        if selected_cats_table: df_for_day = df_for_day[df_for_day['Category_Desc'].isin(selected_cats_table)]
-        if selected_skus: df_for_day = df_for_day[df_for_day['SKU'].isin(selected_skus)]
-        disp_daily = df_for_day.groupby('Day').agg({
-            'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum'
-        }).reset_index()
-        disp_daily = disp_daily[(disp_daily['Revenue'] > 0) | (disp_daily['Visitors'] > 0)].sort_values('DateObj')
-        disp_daily['Date'] = pd.to_datetime(disp_daily['DateObj']).dt.date
-        disp_daily['Avg CR'] = (disp_daily['Buyers'] / disp_daily['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
-        disp_daily['AOV'] = (disp_daily['Revenue'] / disp_daily['Orders']).replace([np.inf, -np.inf], 0).fillna(0)
-        st.session_state['tb_day_rendered_ids'] = disp_daily['Day'].tolist()
-
-        # 4. SKU Code (Filtered by Month, Cat, Day - but not SKU itself)
-        df_for_sku = filtered_df.copy()
-        if selected_months: df_for_sku = df_for_sku[df_for_sku['Month'].isin(selected_months)]
-        if selected_cats_table: df_for_sku = df_for_sku[df_for_sku['Category_Desc'].isin(selected_cats_table)]
-        if selected_days: df_for_sku = df_for_sku[df_for_sku['Day'].isin(selected_days)]
+    with tab_sales:
+        # ================= 7. Global Filters =================
+        col_p1, col_p2, col_p3, col_p4 = st.columns([1, 1.5, 1, 2])
         
-        if 'Product' not in df_for_sku.columns:
-            df_for_sku['Product'] = df_for_sku['SKU']
-        else:
-            df_for_sku['Product'] = df_for_sku['Product'].fillna(df_for_sku['SKU'])
-
-        disp_sku = df_for_sku.groupby('SKU').agg({
-            'Product': 'first',
-            'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum', 'A2C': 'sum',
-            'Stock_Available': 'first'
-        }).reset_index()
-        disp_sku = disp_sku[(disp_sku['Revenue'] > 0) | (disp_sku['Visitors'] > 0) | (disp_sku['A2C'] > 0)]
-        disp_sku['Avg CR'] = (disp_sku['Buyers'] / disp_sku['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
-        disp_sku['Avg Price'] = (disp_sku['Revenue'] / disp_sku['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
-        disp_sku['AOV'] = (disp_sku['Revenue'] / disp_sku['Orders']).replace([np.inf, -np.inf], 0).fillna(0)
-        disp_sku = disp_sku.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
-        st.session_state['tb_sku_rendered_ids'] = disp_sku['SKU'].tolist()
-
-        # Explicit column configurations with fixed widths to prevent Glide Data Grid layout shifts
-        col_config_month = {
-            "Month": st.column_config.TextColumn("Month", width="small"),
-            "Revenue": st.column_config.NumberColumn("ยอดรวมยืนยัน (฿)", format="%,.2f", width="medium"),
-            "Units_Sold": st.column_config.NumberColumn("Qty ยืนยัน", format="%,d", width="small"),
-            "Orders": st.column_config.NumberColumn("ออเดอร์ยืนยัน", format="%,d", width="small"),
-            "Avg CR": st.column_config.NumberColumn("CR บนยอดยืนยัน", format="%.2f%%", width="small"),
-            "% Rev": st.column_config.ProgressColumn("% สัดส่วน", format="%.1f%%", min_value=0, max_value=100, width="small"),
-            "Visitors": st.column_config.NumberColumn("ผู้เข้าชม", format="%,d", width="small")
-        }
-
-        col_config_cat = {
-            "Category_Desc": st.column_config.TextColumn("หมวดหมู่สินค้า (Category)", width="large"),
-            "Revenue": st.column_config.NumberColumn("ยอดรวมยืนยัน (฿)", format="%,.2f", width="medium"),
-            "Units_Sold": st.column_config.NumberColumn("Qty ยืนยัน", format="%,d", width="small"),
-            "Orders": st.column_config.NumberColumn("ออเดอร์ยืนยัน", format="%,d", width="small"),
-            "Avg CR": st.column_config.NumberColumn("CR บนยอดยืนยัน", format="%.2f%%", width="small"),
-            "Avg Price": st.column_config.NumberColumn("ราคาเฉลี่ย/ชิ้น", format="%,.2f", width="small"),
-            "Visitors": st.column_config.NumberColumn("ผู้เข้าชม", format="%,d", width="small"),
-            "Buyers": st.column_config.NumberColumn("ผู้ซื้อ", format="%,d", width="small"),
-            "A2C": st.column_config.NumberColumn("ตะกร้า (A2C)", format="%,d", width="small")
-        }
-
-        col_config_day = {
-            "Date": st.column_config.DateColumn("Date (วันที่)", format="DD/MM/YYYY", width="medium"),
-            "Revenue": st.column_config.NumberColumn("ยอดรวมยืนยัน (฿)", format="%,.2f", width="medium"),
-            "Units_Sold": st.column_config.NumberColumn("Qty ยืนยัน", format="%,d", width="small"),
-            "Orders": st.column_config.NumberColumn("ออเดอร์ยืนยัน", format="%,d", width="small"),
-            "Avg CR": st.column_config.NumberColumn("CR บนยอดยืนยัน", format="%.2f%%", width="small"),
-            "AOV": st.column_config.NumberColumn("AOV ยืนยัน", format="%,.2f", width="small"),
-            "Visitors": st.column_config.NumberColumn("ผู้เข้าชม", format="%,d", width="small"),
-            "Buyers": st.column_config.NumberColumn("ผู้ซื้อ", format="%,d", width="small")
-        }
-
-        col_config_sku = {
-            "SKU": st.column_config.TextColumn("SKU Code", width="medium"),
-            "Product": st.column_config.TextColumn("ชื่อสินค้า (Description)", width="large"),
-            "Revenue": st.column_config.NumberColumn("ยอดรวมยืนยัน (฿)", format="%,.2f", width="medium"),
-            "Units_Sold": st.column_config.NumberColumn("Qty ยืนยัน", format="%,d", width="small"),
-            "Orders": st.column_config.NumberColumn("ออเดอร์ยืนยัน", format="%,d", width="small"),
-            "Avg CR": st.column_config.NumberColumn("CR บนยอดยืนยัน", format="%.2f%%", width="small"),
-            "Avg Price": st.column_config.NumberColumn("ราคาเฉลี่ย/ชิ้น", format="%,.2f", width="small"),
-            "Visitors": st.column_config.NumberColumn("ผู้เข้าชม", format="%,d", width="small"),
-            "A2C": st.column_config.NumberColumn("ตะกร้า (A2C)", format="%,d", width="small"),
-            "Buyers": st.column_config.NumberColumn("ผู้ซื้อ", format="%,d", width="small"),
-            "Stock_Available": st.column_config.NumberColumn("Stock", format="%d ชิ้น", width="small")
-        }
-
-        # Middle Row (Fixed height 320px for perfect alignment & zero layout jump)
-        col_m1, col_m2, col_m3 = st.columns([1.5, 1.6, 2.5])
-        with col_m1:
-            st.write("**Order Month**")
-            st.dataframe(
-                disp_monthly[['Month', 'Revenue', 'Units_Sold', 'Orders', 'Avg CR', '% Rev', 'Visitors']], 
-                hide_index=True, use_container_width=True, height=320,
-                on_select="rerun", selection_mode="multi-row", key="tb_month",
-                column_config=col_config_month
-            )
-        with col_m2:
-            st.write("**Revenue Trend by FGMONTHYEAR**")
-            chart_df = cross_df.groupby('Month').agg({'Revenue': 'sum'}).reset_index().sort_values('Month')
-            if not chart_df.empty:
-                chart_df['Month'] = chart_df['Month'].astype(str)
-                chart_df = all_months_df.merge(chart_df, on='Month', how='left').fillna({'Revenue': 0.0})
-            else:
-                chart_df = all_months_df.copy()
-                chart_df['Revenue'] = 0.0
-
-            fig = px.line(chart_df, x='Month', y='Revenue', markers=True, text='Revenue', color_discrete_sequence=['#00d4ff'])
-            fig.update_traces(textposition="top center", texttemplate='%{text:.2s}')
-            fig.update_layout(
-                margin=dict(l=0, r=0, t=10, b=0), height=320,
-                xaxis_title="", yaxis_title="",
-                xaxis=dict(showgrid=False), yaxis=dict(showgrid=False),
-                transition={'duration': 0}
-            )
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-        with col_m3:
-            st.write("**Product Group (หมวดหมู่สินค้า)**")
-            st.dataframe(
-                disp_cat[['Category_Desc', 'Revenue', 'Units_Sold', 'Orders', 'Avg CR', 'Avg Price', 'Visitors', 'A2C']], 
-                hide_index=True, use_container_width=True, height=320,
-                on_select="rerun", selection_mode="multi-row", key="tb_cat",
-                column_config=col_config_cat
-            )
-
-        st.markdown("---")
-        # Bottom Row (Fixed height 380px for perfect alignment & zero layout jump)
-        col_d1, col_d2 = st.columns([1.8, 2.2])
-        with col_d1:
-            st.write("**Order Date (รายวัน)**")
-            st.dataframe(
-                disp_daily[['Date', 'Revenue', 'Units_Sold', 'Orders', 'Avg CR', 'AOV', 'Visitors']], 
-                hide_index=True, use_container_width=True, height=380,
-                on_select="rerun", selection_mode="multi-row", key="tb_day",
-                column_config=col_config_day
-            )
-
-        def prepare_tree_view_data(df_input, search_term=""):
-            if df_input.empty:
-                return pd.DataFrame(), {}, set(), 0, True
-
-            df_tree = df_input.copy()
-            if 'Parent_SKU' in df_tree.columns:
-                p_id = df_tree['Parent_SKU'].astype(str).str.strip().replace({'nan': '-', 'None': '-', '': '-'})
-                df_tree['Parent_ID'] = np.where((p_id == '-') | (p_id == '') | (df_tree['Platform'] == 'Lazada'), df_tree['SKU'], p_id)
-            else:
-                df_tree['Parent_ID'] = df_tree['SKU']
-
-            if 'Product' not in df_tree.columns:
-                df_tree['Product'] = df_tree['SKU']
-            if 'Stock_Available' not in df_tree.columns:
-                df_tree['Stock_Available'] = 0
-
-            sku_counts = df_tree.groupby('Parent_ID')['SKU'].nunique()
-
-            def get_common_prefix(strings):
-                valid = [str(s).strip() for s in strings if str(s).strip() not in ['-', '', 'nan', 'None'] and not str(s).strip().startswith('PID-')]
-                if not valid: return ""
-                import os
-                cp = os.path.commonprefix(valid)
-                return cp.rstrip('-_./ ')
-
-            parent_sku_dict = {}
-            for pid, group in df_tree.groupby('Parent_ID'):
-                skus = [str(s).strip() for s in group['SKU'].dropna().unique() 
-                        if str(s).strip() not in ['', '-', 'nan', 'None'] and not str(s).strip().startswith('PID-')]
-                if not skus:
-                    parent_sku_dict[pid] = str(pid)
-                elif len(skus) == 1:
-                    parent_sku_dict[pid] = skus[0]
+        with col_p1:
+            platforms = ['ทั้งหมด (All)'] + sorted(base_df['Platform'].unique().tolist())
+            sel_platform = st.selectbox("ช่องทาง (Platform)", platforms)
+    
+        with col_p2:
+            available_shops = base_df if sel_platform == 'ทั้งหมด (All)' else base_df[base_df['Platform'] == sel_platform]
+            shop_list = sorted(available_shops['Shop_Name'].unique().tolist())
+            sel_shops = st.multiselect("ร้านค้า (Shop)", shop_list, default=shop_list)
+    
+        with col_p3:
+            all_years = sorted(base_df['Year'].unique().tolist())
+            selected_years = st.multiselect("ปี (Year)", all_years, default=all_years)
+    
+        with col_p4:
+            all_cats = sorted([str(s) for s in base_df['Category_Desc'].dropna().unique() if str(s).strip() not in ['-', 'nan', 'NaN', 'None', '']])
+            selected_cats = st.multiselect("หมวดหมู่สินค้า (Category)", all_cats)
+    
+        filtered_df = base_df.copy()
+        if sel_platform != 'ทั้งหมด (All)':
+            filtered_df = filtered_df[filtered_df['Platform'] == sel_platform]
+        if sel_shops:
+            filtered_df = filtered_df[filtered_df['Shop_Name'].isin(sel_shops)]
+        if selected_years:
+            filtered_df = filtered_df[filtered_df['Year'].isin(selected_years)]
+        if selected_cats:
+            filtered_df = filtered_df[filtered_df['Category_Desc'].isin(selected_cats)]
+    
+        # ================= 8. Interactive Dashboard Fragment =================
+        # Wrapped in @st.fragment so table clicks rerun ONLY the dashboard content,
+        # preventing full-page reloads, screen flickering, or jumping!
+        @st.fragment
+        def render_interactive_dashboard(filtered_df, active_stock_name=""):
+            monthly_base = filtered_df.groupby('Month').agg({'Revenue': 'sum', 'Visitors': 'sum'}).reset_index().sort_values('Month')
+            cat_base = filtered_df.groupby('Category_Desc').agg({
+                'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum'
+            }).reset_index().sort_values('Revenue', ascending=False)
+            cat_base['Avg CR'] = (cat_base['Buyers'] / cat_base['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
+            cat_base['Avg Price'] = (cat_base['Revenue'] / cat_base['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
+    
+            daily_base = filtered_df.groupby('Day').agg({'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum'}).reset_index().sort_values('DateObj')
+            daily_base['Date'] = pd.to_datetime(daily_base['DateObj']).dt.date
+            sku_base = filtered_df.groupby('SKU').agg({
+                'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'A2C': 'sum',
+                'Stock_Available': 'first'
+            }).reset_index().sort_values('Revenue', ascending=False)
+            sku_base['Avg CR'] = (sku_base['Buyers'] / sku_base['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
+            sku_base['Avg Price'] = (sku_base['Revenue'] / sku_base['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
+    
+            # Cross-Filtering Extraction
+            def get_selected_rows(key):
+                val = st.session_state.get(key)
+                if not val: return []
+                if isinstance(val, dict): return val.get('selection', {}).get('rows', [])
+                if hasattr(val, 'selection') and hasattr(val.selection, 'rows'): return val.selection.rows
+                try: return val['selection']['rows']
+                except: return []
+    
+            def get_selected_items(key, id_col, fallback_df):
+                sel_idx = get_selected_rows(key)
+                if not sel_idx: return []
+                stored_ids = st.session_state.get(f"{key}_rendered_ids", [])
+                if stored_ids:
+                    return [stored_ids[i] for i in sel_idx if i < len(stored_ids)]
+                elif id_col in fallback_df.columns:
+                    return [fallback_df.iloc[i][id_col] for i in sel_idx if i < len(fallback_df)]
+                return []
+    
+            selected_months = get_selected_items('tb_month', 'Month', monthly_base)
+            selected_cats_table = get_selected_items('tb_cat', 'Category_Desc', cat_base)
+            selected_days = get_selected_items('tb_day', 'Day', daily_base)
+            selected_skus = get_selected_items('tb_sku', 'SKU', sku_base)
+    
+            cross_df = filtered_df.copy()
+            if selected_months: cross_df = cross_df[cross_df['Month'].isin(selected_months)]
+            if selected_cats_table: cross_df = cross_df[cross_df['Category_Desc'].isin(selected_cats_table)]
+            if selected_days: cross_df = cross_df[cross_df['Day'].isin(selected_days)]
+            if selected_skus: cross_df = cross_df[cross_df['SKU'].isin(selected_skus)]
+    
+            # ================= 9. KPI Scorecards =================
+            st.markdown("---")
+            kpi1, kpi2, kpi3, kpi4, kpi5, kpi6, kpi7 = st.columns(7)
+            rev = cross_df['Revenue'].sum() if 'Revenue' in cross_df.columns else 0
+            vis = cross_df['Visitors'].sum() if 'Visitors' in cross_df.columns else 0
+            buy = cross_df['Buyers'].sum() if 'Buyers' in cross_df.columns else 0
+            unit = cross_df['Units_Sold'].sum() if 'Units_Sold' in cross_df.columns else 0
+            orders = cross_df['Orders'].sum() if 'Orders' in cross_df.columns else 0
+            cr = (buy / vis) if vis > 0 else 0
+            rev_per_buyer = (rev / buy) if buy > 0 else 0
+            aov = (rev / orders) if orders > 0 else (rev / buy if buy > 0 else 0)
+    
+            kpi1.metric("ยอดรวมยืนยัน", f"฿ {rev:,.0f}")
+            kpi2.metric("SKU Visitors", f"{vis:,.0f}")
+            kpi3.metric("CR บนยอดยืนยัน", f"{cr*100:,.2f}%")
+            kpi4.metric("Rev per Buyers", f"฿ {rev_per_buyer:,.0f}")
+            kpi5.metric("AOV ยืนยัน", f"฿ {aov:,.0f}")
+            kpi6.metric("ออเดอร์ยืนยัน", f"{orders:,.0f}")
+            kpi7.metric("Qty ยืนยัน", f"{unit:,.0f}")
+    
+            st.markdown("---")
+    
+            # ================= 10. Display Tables with Symmetric Cross-Filtering =================
+            has_active_selection = bool(selected_months or selected_cats_table or selected_days or selected_skus)
+            col_rst1, col_rst2 = st.columns([4, 1])
+            with col_rst1:
+                if has_active_selection:
+                    active_info = []
+                    if selected_months: active_info.append(f"เดือน: {', '.join(selected_months)}")
+                    if selected_cats_table: active_info.append(f"หมวดหมู่: {', '.join(selected_cats_table)}")
+                    if selected_days: active_info.append(f"วันที่: {', '.join(selected_days)}")
+                    if selected_skus: active_info.append(f"SKU: {', '.join(selected_skus[:3])}{'...' if len(selected_skus)>3 else ''}")
+                    st.markdown(f"<div style='background-color:#e8f4fd; color:#0c5460; padding:8px 14px; border-radius:6px; font-size:14px; border:1px solid #bee5eb;'>🎯 <b>กำลังกรองข้อมูลตาม:</b> {' | '.join(active_info)}</div>", unsafe_allow_html=True)
                 else:
-                    cp = get_common_prefix(skus)
-                    parent_sku_dict[pid] = cp if len(cp) >= 2 else skus[0]
-
-            # Step 1: SKU-level aggregation (aggregating over dates for each unique SKU)
-            # Use 'first' for Stock_Available so stock is NEVER multiplied by the number of daily sales rows!
-            sku_agg = df_tree.groupby(['Parent_ID', 'SKU']).agg({
+                    st.markdown("<div style='background-color:#f8f9fa; color:#6c757d; padding:8px 14px; border-radius:6px; font-size:14px; border:1px solid #e9ecef;'>💡 <i>คลิกเลือกแถวในตารางด้านล่างเพื่อ Cross-Filter กรองยอดขายและพฤติกรรมลูกค้า</i></div>", unsafe_allow_html=True)
+            with col_rst2:
+                if has_active_selection:
+                    if st.button("🔄 ล้างตัวกรอง (Reset)", use_container_width=True):
+                        for k in ['tb_month', 'tb_cat', 'tb_day', 'tb_sku']:
+                            if k in st.session_state:
+                                del st.session_state[k]
+                        st.rerun()
+                else:
+                    st.button("🔄 ล้างตัวกรอง (Reset)", use_container_width=True, disabled=True)
+    
+            # 1. Order Month (Macro time overview - preserved with full month list)
+            df_for_month = filtered_df.copy()
+            if selected_cats_table: df_for_month = df_for_month[df_for_month['Category_Desc'].isin(selected_cats_table)]
+            if selected_skus: df_for_month = df_for_month[df_for_month['SKU'].isin(selected_skus)]
+            # Note: Do NOT filter df_for_month by selected_days to ensure Order Month never collapses to 1 row
+            disp_monthly = df_for_month.groupby('Month').agg({
+                'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum'
+            }).reset_index()
+    
+            # Build full month list from base_df for the chosen year(s)
+            year_mask = base_df['Year'].isin(selected_years) if selected_years else pd.Series(True, index=base_df.index)
+            all_months_list = sorted(base_df.loc[year_mask, 'Month'].dropna().unique().tolist())
+            if not all_months_list:
+                all_months_list = sorted(base_df['Month'].dropna().unique().tolist())
+            all_months_df = pd.DataFrame({'Month': pd.Series(all_months_list, dtype='object')})
+    
+            if not disp_monthly.empty:
+                disp_monthly['Month'] = disp_monthly['Month'].astype(str)
+                disp_monthly = all_months_df.merge(disp_monthly, on='Month', how='left').fillna({
+                    'Revenue': 0.0, 'Visitors': 0.0, 'Buyers': 0.0, 'Units_Sold': 0.0, 'Orders': 0.0
+                })
+            else:
+                disp_monthly = all_months_df.copy()
+                for col in ['Revenue', 'Visitors', 'Buyers', 'Units_Sold', 'Orders']:
+                    disp_monthly[col] = 0.0
+    
+            total_m_rev = disp_monthly['Revenue'].sum()
+            disp_monthly['% Rev'] = (disp_monthly['Revenue'] / total_m_rev * 100).fillna(0) if total_m_rev > 0 else 0.0
+            disp_monthly['Avg CR'] = (disp_monthly['Buyers'] / disp_monthly['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
+            disp_monthly['AOV'] = (disp_monthly['Revenue'] / disp_monthly['Orders']).replace([np.inf, -np.inf], 0).fillna(0)
+            st.session_state['tb_month_rendered_ids'] = disp_monthly['Month'].tolist()
+    
+            # 2. Product Group (Filtered by Month, Day, SKU - but not Cat itself)
+            df_for_cat = filtered_df.copy()
+            if selected_months: df_for_cat = df_for_cat[df_for_cat['Month'].isin(selected_months)]
+            if selected_days: df_for_cat = df_for_cat[df_for_cat['Day'].isin(selected_days)]
+            if selected_skus: df_for_cat = df_for_cat[df_for_cat['SKU'].isin(selected_skus)]
+            disp_cat = df_for_cat.groupby('Category_Desc').agg({
+                'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum', 'A2C': 'sum'
+            }).reset_index()
+            disp_cat = disp_cat[(disp_cat['Revenue'] > 0) | (disp_cat['Visitors'] > 0) | (disp_cat['A2C'] > 0)]
+            disp_cat['Avg CR'] = (disp_cat['Buyers'] / disp_cat['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
+            disp_cat['Avg Price'] = (disp_cat['Revenue'] / disp_cat['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
+            disp_cat['AOV'] = (disp_cat['Revenue'] / disp_cat['Orders']).replace([np.inf, -np.inf], 0).fillna(0)
+            disp_cat = disp_cat.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
+            st.session_state['tb_cat_rendered_ids'] = disp_cat['Category_Desc'].tolist()
+    
+            # 3. Order Date (Filtered by Month, Cat, SKU - but not Day itself)
+            df_for_day = filtered_df.copy()
+            if selected_months: df_for_day = df_for_day[df_for_day['Month'].isin(selected_months)]
+            if selected_cats_table: df_for_day = df_for_day[df_for_day['Category_Desc'].isin(selected_cats_table)]
+            if selected_skus: df_for_day = df_for_day[df_for_day['SKU'].isin(selected_skus)]
+            disp_daily = df_for_day.groupby('Day').agg({
+                'DateObj': 'first', 'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum'
+            }).reset_index()
+            disp_daily = disp_daily[(disp_daily['Revenue'] > 0) | (disp_daily['Visitors'] > 0)].sort_values('DateObj')
+            disp_daily['Date'] = pd.to_datetime(disp_daily['DateObj']).dt.date
+            disp_daily['Avg CR'] = (disp_daily['Buyers'] / disp_daily['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
+            disp_daily['AOV'] = (disp_daily['Revenue'] / disp_daily['Orders']).replace([np.inf, -np.inf], 0).fillna(0)
+            st.session_state['tb_day_rendered_ids'] = disp_daily['Day'].tolist()
+    
+            # 4. SKU Code (Filtered by Month, Cat, Day - but not SKU itself)
+            df_for_sku = filtered_df.copy()
+            if selected_months: df_for_sku = df_for_sku[df_for_sku['Month'].isin(selected_months)]
+            if selected_cats_table: df_for_sku = df_for_sku[df_for_sku['Category_Desc'].isin(selected_cats_table)]
+            if selected_days: df_for_sku = df_for_sku[df_for_sku['Day'].isin(selected_days)]
+            
+            if 'Product' not in df_for_sku.columns:
+                df_for_sku['Product'] = df_for_sku['SKU']
+            else:
+                df_for_sku['Product'] = df_for_sku['Product'].fillna(df_for_sku['SKU'])
+    
+            disp_sku = df_for_sku.groupby('SKU').agg({
                 'Product': 'first',
-                'Revenue': 'sum',
-                'Visitors': 'sum',
-                'A2C': 'sum',
-                'Units_Sold': 'sum',
-                'Buyers': 'sum',
+                'Revenue': 'sum', 'Visitors': 'sum', 'Buyers': 'sum', 'Units_Sold': 'sum', 'Orders': 'sum', 'A2C': 'sum',
                 'Stock_Available': 'first'
             }).reset_index()
-
-            # Step 2: Parent-level aggregation (summing unique stocks of distinct child variants)
-            parent_df = sku_agg.groupby('Parent_ID').agg({
-                'Product': 'first',
-                'Revenue': 'sum',
-                'Visitors': 'sum',
-                'A2C': 'sum',
-                'Units_Sold': 'sum',
-                'Buyers': 'sum',
-                'Stock_Available': 'sum',
-                'SKU': 'first'
-            }).reset_index()
-
-            parent_df['Parent_SKU_Display'] = parent_df['Parent_ID'].map(parent_sku_dict).fillna(parent_df['SKU'])
-            parent_df['variant_count'] = parent_df['Parent_ID'].map(sku_counts).fillna(1).astype(int)
-            parent_df['is_multi'] = parent_df['variant_count'] > 1
-            parent_df = parent_df.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
-
-            variants_dict = {}
-            multi_pids = set(parent_df.loc[parent_df['is_multi'], 'Parent_ID'])
-            if multi_pids:
-                multi_rows = sku_agg[sku_agg['Parent_ID'].isin(multi_pids)].sort_values('Revenue', ascending=False)
-                for pid, group in multi_rows.groupby('Parent_ID'):
-                    variants_dict[pid] = group
-
-            st_clean = search_term.strip().lower()
-            open_pids = set()
-            if st_clean:
-                matching_pids = set()
-                for _, row in parent_df.iterrows():
-                    pid = row['Parent_ID']
-                    p_disp_sku = str(row.get('Parent_SKU_Display', '')).lower()
-                    if (st_clean in str(row['Product']).lower() or 
-                        st_clean in str(row['SKU']).lower() or 
-                        st_clean in str(pid).lower() or 
-                        st_clean in p_disp_sku):
-                        matching_pids.add(pid)
-                for pid, children in variants_dict.items():
-                    if any(st_clean in str(c_sku).lower() for c_sku in children['SKU']):
-                        matching_pids.add(pid)
-                        open_pids.add(pid)
-                parent_df = parent_df[parent_df['Parent_ID'].isin(matching_pids)]
-
-            total_parents = len(parent_df)
-            return parent_df, variants_dict, open_pids, total_parents, False
-
-        def export_tree_view_to_excel(df_input, search_term=""):
-            parent_df, variants_dict, _, _, is_empty = prepare_tree_view_data(df_input, search_term)
-            buf = io.BytesIO()
-            if is_empty or parent_df.empty:
+            disp_sku = disp_sku[(disp_sku['Revenue'] > 0) | (disp_sku['Visitors'] > 0) | (disp_sku['A2C'] > 0)]
+            disp_sku['Avg CR'] = (disp_sku['Buyers'] / disp_sku['Visitors'] * 100).replace([np.inf, -np.inf], 0).fillna(0)
+            disp_sku['Avg Price'] = (disp_sku['Revenue'] / disp_sku['Units_Sold']).replace([np.inf, -np.inf], 0).fillna(0)
+            disp_sku['AOV'] = (disp_sku['Revenue'] / disp_sku['Orders']).replace([np.inf, -np.inf], 0).fillna(0)
+            disp_sku = disp_sku.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
+            st.session_state['tb_sku_rendered_ids'] = disp_sku['SKU'].tolist()
+    
+            # Explicit column configurations with fixed widths to prevent Glide Data Grid layout shifts
+            col_config_month = {
+                "Month": st.column_config.TextColumn("Month", width="small"),
+                "Revenue": st.column_config.NumberColumn("ยอดรวมยืนยัน (฿)", format="%,.2f", width="medium"),
+                "Units_Sold": st.column_config.NumberColumn("Qty ยืนยัน", format="%,d", width="small"),
+                "Orders": st.column_config.NumberColumn("ออเดอร์ยืนยัน", format="%,d", width="small"),
+                "Avg CR": st.column_config.NumberColumn("CR บนยอดยืนยัน", format="%.2f%%", width="small"),
+                "% Rev": st.column_config.ProgressColumn("% สัดส่วน", format="%.1f%%", min_value=0, max_value=100, width="small"),
+                "Visitors": st.column_config.NumberColumn("ผู้เข้าชม", format="%,d", width="small")
+            }
+    
+            col_config_cat = {
+                "Category_Desc": st.column_config.TextColumn("หมวดหมู่สินค้า (Category)", width="large"),
+                "Revenue": st.column_config.NumberColumn("ยอดรวมยืนยัน (฿)", format="%,.2f", width="medium"),
+                "Units_Sold": st.column_config.NumberColumn("Qty ยืนยัน", format="%,d", width="small"),
+                "Orders": st.column_config.NumberColumn("ออเดอร์ยืนยัน", format="%,d", width="small"),
+                "Avg CR": st.column_config.NumberColumn("CR บนยอดยืนยัน", format="%.2f%%", width="small"),
+                "Avg Price": st.column_config.NumberColumn("ราคาเฉลี่ย/ชิ้น", format="%,.2f", width="small"),
+                "Visitors": st.column_config.NumberColumn("ผู้เข้าชม", format="%,d", width="small"),
+                "Buyers": st.column_config.NumberColumn("ผู้ซื้อ", format="%,d", width="small"),
+                "A2C": st.column_config.NumberColumn("ตะกร้า (A2C)", format="%,d", width="small")
+            }
+    
+            col_config_day = {
+                "Date": st.column_config.DateColumn("Date (วันที่)", format="DD/MM/YYYY", width="medium"),
+                "Revenue": st.column_config.NumberColumn("ยอดรวมยืนยัน (฿)", format="%,.2f", width="medium"),
+                "Units_Sold": st.column_config.NumberColumn("Qty ยืนยัน", format="%,d", width="small"),
+                "Orders": st.column_config.NumberColumn("ออเดอร์ยืนยัน", format="%,d", width="small"),
+                "Avg CR": st.column_config.NumberColumn("CR บนยอดยืนยัน", format="%.2f%%", width="small"),
+                "AOV": st.column_config.NumberColumn("AOV ยืนยัน", format="%,.2f", width="small"),
+                "Visitors": st.column_config.NumberColumn("ผู้เข้าชม", format="%,d", width="small"),
+                "Buyers": st.column_config.NumberColumn("ผู้ซื้อ", format="%,d", width="small")
+            }
+    
+            col_config_sku = {
+                "SKU": st.column_config.TextColumn("SKU Code", width="medium"),
+                "Product": st.column_config.TextColumn("ชื่อสินค้า (Description)", width="large"),
+                "Revenue": st.column_config.NumberColumn("ยอดรวมยืนยัน (฿)", format="%,.2f", width="medium"),
+                "Units_Sold": st.column_config.NumberColumn("Qty ยืนยัน", format="%,d", width="small"),
+                "Orders": st.column_config.NumberColumn("ออเดอร์ยืนยัน", format="%,d", width="small"),
+                "Avg CR": st.column_config.NumberColumn("CR บนยอดยืนยัน", format="%.2f%%", width="small"),
+                "Avg Price": st.column_config.NumberColumn("ราคาเฉลี่ย/ชิ้น", format="%,.2f", width="small"),
+                "Visitors": st.column_config.NumberColumn("ผู้เข้าชม", format="%,d", width="small"),
+                "A2C": st.column_config.NumberColumn("ตะกร้า (A2C)", format="%,d", width="small"),
+                "Buyers": st.column_config.NumberColumn("ผู้ซื้อ", format="%,d", width="small"),
+                "Stock_Available": st.column_config.NumberColumn("Stock", format="%d ชิ้น", width="small")
+            }
+    
+            # Middle Row (Fixed height 320px for perfect alignment & zero layout jump)
+            col_m1, col_m2, col_m3 = st.columns([1.5, 1.6, 2.5])
+            with col_m1:
+                st.write("**Order Month**")
+                st.dataframe(
+                    disp_monthly[['Month', 'Revenue', 'Units_Sold', 'Orders', 'Avg CR', '% Rev', 'Visitors']], 
+                    hide_index=True, use_container_width=True, height=320,
+                    on_select="rerun", selection_mode="multi-row", key="tb_month",
+                    column_config=col_config_month
+                )
+            with col_m2:
+                st.write("**Revenue Trend by FGMONTHYEAR**")
+                chart_df = cross_df.groupby('Month').agg({'Revenue': 'sum'}).reset_index().sort_values('Month')
+                if not chart_df.empty:
+                    chart_df['Month'] = chart_df['Month'].astype(str)
+                    chart_df = all_months_df.merge(chart_df, on='Month', how='left').fillna({'Revenue': 0.0})
+                else:
+                    chart_df = all_months_df.copy()
+                    chart_df['Revenue'] = 0.0
+    
+                fig = px.line(chart_df, x='Month', y='Revenue', markers=True, text='Revenue', color_discrete_sequence=['#00d4ff'])
+                fig.update_traces(textposition="top center", texttemplate='%{text:.2s}')
+                fig.update_layout(
+                    margin=dict(l=0, r=0, t=10, b=0), height=320,
+                    xaxis_title="", yaxis_title="",
+                    xaxis=dict(showgrid=False), yaxis=dict(showgrid=False),
+                    transition={'duration': 0}
+                )
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            with col_m3:
+                st.write("**Product Group (หมวดหมู่สินค้า)**")
+                st.dataframe(
+                    disp_cat[['Category_Desc', 'Revenue', 'Units_Sold', 'Orders', 'Avg CR', 'Avg Price', 'Visitors', 'A2C']], 
+                    hide_index=True, use_container_width=True, height=320,
+                    on_select="rerun", selection_mode="multi-row", key="tb_cat",
+                    column_config=col_config_cat
+                )
+    
+            st.markdown("---")
+            # Bottom Row (Fixed height 380px for perfect alignment & zero layout jump)
+            col_d1, col_d2 = st.columns([1.8, 2.2])
+            with col_d1:
+                st.write("**Order Date (รายวัน)**")
+                st.dataframe(
+                    disp_daily[['Date', 'Revenue', 'Units_Sold', 'Orders', 'Avg CR', 'AOV', 'Visitors']], 
+                    hide_index=True, use_container_width=True, height=380,
+                    on_select="rerun", selection_mode="multi-row", key="tb_day",
+                    column_config=col_config_day
+                )
+    
+            def prepare_tree_view_data(df_input, search_term=""):
+                if df_input.empty:
+                    return pd.DataFrame(), {}, set(), 0, True
+    
+                df_tree = df_input.copy()
+                if 'Parent_SKU' in df_tree.columns:
+                    p_id = df_tree['Parent_SKU'].astype(str).str.strip().replace({'nan': '-', 'None': '-', '': '-'})
+                    df_tree['Parent_ID'] = np.where((p_id == '-') | (p_id == '') | (df_tree['Platform'] == 'Lazada'), df_tree['SKU'], p_id)
+                else:
+                    df_tree['Parent_ID'] = df_tree['SKU']
+    
+                if 'Product' not in df_tree.columns:
+                    df_tree['Product'] = df_tree['SKU']
+                if 'Stock_Available' not in df_tree.columns:
+                    df_tree['Stock_Available'] = 0
+    
+                sku_counts = df_tree.groupby('Parent_ID')['SKU'].nunique()
+    
+                def get_common_prefix(strings):
+                    valid = [str(s).strip() for s in strings if str(s).strip() not in ['-', '', 'nan', 'None'] and not str(s).strip().startswith('PID-')]
+                    if not valid: return ""
+                    import os
+                    cp = os.path.commonprefix(valid)
+                    return cp.rstrip('-_./ ')
+    
+                parent_sku_dict = {}
+                for pid, group in df_tree.groupby('Parent_ID'):
+                    skus = [str(s).strip() for s in group['SKU'].dropna().unique() 
+                            if str(s).strip() not in ['', '-', 'nan', 'None'] and not str(s).strip().startswith('PID-')]
+                    if not skus:
+                        parent_sku_dict[pid] = str(pid)
+                    elif len(skus) == 1:
+                        parent_sku_dict[pid] = skus[0]
+                    else:
+                        cp = get_common_prefix(skus)
+                        parent_sku_dict[pid] = cp if len(cp) >= 2 else skus[0]
+    
+                # Step 1: SKU-level aggregation (aggregating over dates for each unique SKU)
+                # Use 'first' for Stock_Available so stock is NEVER multiplied by the number of daily sales rows!
+                sku_agg = df_tree.groupby(['Parent_ID', 'SKU']).agg({
+                    'Product': 'first',
+                    'Revenue': 'sum',
+                    'Visitors': 'sum',
+                    'A2C': 'sum',
+                    'Units_Sold': 'sum',
+                    'Buyers': 'sum',
+                    'Stock_Available': 'first'
+                }).reset_index()
+    
+                # Step 2: Parent-level aggregation (summing unique stocks of distinct child variants)
+                parent_df = sku_agg.groupby('Parent_ID').agg({
+                    'Product': 'first',
+                    'Revenue': 'sum',
+                    'Visitors': 'sum',
+                    'A2C': 'sum',
+                    'Units_Sold': 'sum',
+                    'Buyers': 'sum',
+                    'Stock_Available': 'sum',
+                    'SKU': 'first'
+                }).reset_index()
+    
+                parent_df['Parent_SKU_Display'] = parent_df['Parent_ID'].map(parent_sku_dict).fillna(parent_df['SKU'])
+                parent_df['variant_count'] = parent_df['Parent_ID'].map(sku_counts).fillna(1).astype(int)
+                parent_df['is_multi'] = parent_df['variant_count'] > 1
+                parent_df = parent_df.sort_values(by=['Revenue', 'Visitors'], ascending=[False, False])
+    
+                variants_dict = {}
+                multi_pids = set(parent_df.loc[parent_df['is_multi'], 'Parent_ID'])
+                if multi_pids:
+                    multi_rows = sku_agg[sku_agg['Parent_ID'].isin(multi_pids)].sort_values('Revenue', ascending=False)
+                    for pid, group in multi_rows.groupby('Parent_ID'):
+                        variants_dict[pid] = group
+    
+                st_clean = search_term.strip().lower()
+                open_pids = set()
+                if st_clean:
+                    matching_pids = set()
+                    for _, row in parent_df.iterrows():
+                        pid = row['Parent_ID']
+                        p_disp_sku = str(row.get('Parent_SKU_Display', '')).lower()
+                        if (st_clean in str(row['Product']).lower() or 
+                            st_clean in str(row['SKU']).lower() or 
+                            st_clean in str(pid).lower() or 
+                            st_clean in p_disp_sku):
+                            matching_pids.add(pid)
+                    for pid, children in variants_dict.items():
+                        if any(st_clean in str(c_sku).lower() for c_sku in children['SKU']):
+                            matching_pids.add(pid)
+                            open_pids.add(pid)
+                    parent_df = parent_df[parent_df['Parent_ID'].isin(matching_pids)]
+    
+                total_parents = len(parent_df)
+                return parent_df, variants_dict, open_pids, total_parents, False
+    
+            def export_tree_view_to_excel(df_input, search_term=""):
+                parent_df, variants_dict, _, _, is_empty = prepare_tree_view_data(df_input, search_term)
+                buf = io.BytesIO()
+                if is_empty or parent_df.empty:
+                    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+                        pd.DataFrame({'ข้อความ': ['ไม่มีข้อมูลตามเงื่อนไขที่เลือก']}).to_excel(writer, index=False, sheet_name='Tree_View')
+                    buf.seek(0)
+                    return buf.getvalue()
+    
+                export_rows = []
+                for _, p_row in parent_df.iterrows():
+                    pid = p_row['Parent_ID']
+                    p_sku = p_row['Parent_SKU_Display']
+                    p_prod = p_row['Product']
+                    p_rev = p_row['Revenue']
+                    p_vis = p_row['Visitors']
+                    p_buyers = p_row['Buyers']
+                    p_cr = (p_buyers / p_vis * 100) if p_vis > 0 else 0.0
+                    p_a2c = p_row['A2C']
+                    p_unit = p_row['Units_Sold']
+                    p_stock = p_row['Stock_Available']
+                    p_vcount = p_row['variant_count']
+    
+                    export_rows.append({
+                        'ระดับ': f"แม่ (Parent: {p_vcount} ตัวเลือก)" if p_vcount > 1 else "สินค้าเดี่ยว (Single)",
+                        'Parent SKU': p_sku,
+                        'SKU Code': p_sku,
+                        'ชื่อสินค้า / รายละเอียด': p_prod,
+                        'ยอดรวมยืนยัน (฿)': round(float(p_rev), 2),
+                        'CR บนยอดยืนยัน (%)': round(float(p_cr), 2),
+                        'คนเข้าชม': int(p_vis),
+                        'ตะกร้า (A2C)': int(p_a2c),
+                        'Qty ยืนยัน': int(p_unit),
+                        'ผู้ซื้อ': int(p_buyers),
+                        'สต็อก': int(p_stock)
+                    })
+    
+                    if p_vcount > 1 and pid in variants_dict:
+                        for _, c_row in variants_dict[pid].iterrows():
+                            c_sku = c_row['SKU']
+                            c_prod = c_row['Product']
+                            c_rev = c_row['Revenue']
+                            c_vis = c_row['Visitors']
+                            c_buyers = c_row['Buyers']
+                            c_cr = (c_buyers / c_vis * 100) if c_vis > 0 else 0.0
+                            c_a2c = c_row['A2C']
+                            c_unit = c_row['Units_Sold']
+                            c_stock = c_row['Stock_Available']
+    
+                            export_rows.append({
+                                'ระดับ': '  ↳ ลูก (Variant)',
+                                'Parent SKU': p_sku,
+                                'SKU Code': c_sku,
+                                'ชื่อสินค้า / รายละเอียด': f"↳ {c_sku} - {c_prod}" if c_prod and c_prod != p_prod else f"↳ {c_sku}",
+                                'ยอดรวมยืนยัน (฿)': round(float(c_rev), 2),
+                                'CR บนยอดยืนยัน (%)': round(float(c_cr), 2),
+                                'คนเข้าชม': int(c_vis),
+                                'ตะกร้า (A2C)': int(c_a2c),
+                                'Qty ยืนยัน': int(c_unit),
+                                'ผู้ซื้อ': int(c_buyers),
+                                'สต็อก': int(c_stock)
+                            })
+    
+                export_df = pd.DataFrame(export_rows)
                 with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-                    pd.DataFrame({'ข้อความ': ['ไม่มีข้อมูลตามเงื่อนไขที่เลือก']}).to_excel(writer, index=False, sheet_name='Tree_View')
+                    export_df.to_excel(writer, index=False, sheet_name='Tree_View_Hierarchy')
+                    ws = writer.sheets['Tree_View_Hierarchy']
+                    try:
+                        from openpyxl.styles import Font, PatternFill, Alignment
+                        header_fill = PatternFill(start_color='1F2937', end_color='1F2937', fill_type='solid')
+                        header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+                        for cell in ws[1]:
+                            cell.fill = header_fill
+                            cell.font = header_font
+                            cell.alignment = Alignment(horizontal='center', vertical='center')
+    
+                        parent_fill = PatternFill(start_color='F1F5F9', end_color='F1F5F9', fill_type='solid')
+                        parent_font = Font(name='Calibri', size=10, bold=True)
+                        child_font = Font(name='Calibri', size=10)
+    
+                        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+                            level_val = str(row[0].value or '')
+                            is_parent = 'แม่' in level_val or 'เดี่ยว' in level_val
+                            for cell in row:
+                                if is_parent:
+                                    cell.fill = parent_fill
+                                    cell.font = parent_font
+                                else:
+                                    cell.font = child_font
+    
+                        for col in ws.columns:
+                            max_len = max(len(str(cell.value or '')) for cell in col)
+                            col_letter = col[0].column_letter
+                            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 50)
+                    except Exception:
+                        pass
+    
                 buf.seek(0)
                 return buf.getvalue()
-
-            export_rows = []
-            for _, p_row in parent_df.iterrows():
-                pid = p_row['Parent_ID']
-                p_sku = p_row['Parent_SKU_Display']
-                p_prod = p_row['Product']
-                p_rev = p_row['Revenue']
-                p_vis = p_row['Visitors']
-                p_buyers = p_row['Buyers']
-                p_cr = (p_buyers / p_vis * 100) if p_vis > 0 else 0.0
-                p_a2c = p_row['A2C']
-                p_unit = p_row['Units_Sold']
-                p_stock = p_row['Stock_Available']
-                p_vcount = p_row['variant_count']
-
-                export_rows.append({
-                    'ระดับ': f"แม่ (Parent: {p_vcount} ตัวเลือก)" if p_vcount > 1 else "สินค้าเดี่ยว (Single)",
-                    'Parent SKU': p_sku,
-                    'SKU Code': p_sku,
-                    'ชื่อสินค้า / รายละเอียด': p_prod,
-                    'ยอดรวมยืนยัน (฿)': round(float(p_rev), 2),
-                    'CR บนยอดยืนยัน (%)': round(float(p_cr), 2),
-                    'คนเข้าชม': int(p_vis),
-                    'ตะกร้า (A2C)': int(p_a2c),
-                    'Qty ยืนยัน': int(p_unit),
-                    'ผู้ซื้อ': int(p_buyers),
-                    'สต็อก': int(p_stock)
-                })
-
-                if p_vcount > 1 and pid in variants_dict:
-                    for _, c_row in variants_dict[pid].iterrows():
-                        c_sku = c_row['SKU']
-                        c_prod = c_row['Product']
-                        c_rev = c_row['Revenue']
-                        c_vis = c_row['Visitors']
-                        c_buyers = c_row['Buyers']
-                        c_cr = (c_buyers / c_vis * 100) if c_vis > 0 else 0.0
-                        c_a2c = c_row['A2C']
-                        c_unit = c_row['Units_Sold']
-                        c_stock = c_row['Stock_Available']
-
-                        export_rows.append({
-                            'ระดับ': '  ↳ ลูก (Variant)',
-                            'Parent SKU': p_sku,
-                            'SKU Code': c_sku,
-                            'ชื่อสินค้า / รายละเอียด': f"↳ {c_sku} - {c_prod}" if c_prod and c_prod != p_prod else f"↳ {c_sku}",
-                            'ยอดรวมยืนยัน (฿)': round(float(c_rev), 2),
-                            'CR บนยอดยืนยัน (%)': round(float(c_cr), 2),
-                            'คนเข้าชม': int(c_vis),
-                            'ตะกร้า (A2C)': int(c_a2c),
-                            'Qty ยืนยัน': int(c_unit),
-                            'ผู้ซื้อ': int(c_buyers),
-                            'สต็อก': int(c_stock)
-                        })
-
-            export_df = pd.DataFrame(export_rows)
-            with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-                export_df.to_excel(writer, index=False, sheet_name='Tree_View_Hierarchy')
-                ws = writer.sheets['Tree_View_Hierarchy']
-                try:
-                    from openpyxl.styles import Font, PatternFill, Alignment
-                    header_fill = PatternFill(start_color='1F2937', end_color='1F2937', fill_type='solid')
-                    header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
-                    for cell in ws[1]:
-                        cell.fill = header_fill
-                        cell.font = header_font
-                        cell.alignment = Alignment(horizontal='center', vertical='center')
-
-                    parent_fill = PatternFill(start_color='F1F5F9', end_color='F1F5F9', fill_type='solid')
-                    parent_font = Font(name='Calibri', size=10, bold=True)
-                    child_font = Font(name='Calibri', size=10)
-
-                    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-                        level_val = str(row[0].value or '')
-                        is_parent = 'แม่' in level_val or 'เดี่ยว' in level_val
-                        for cell in row:
-                            if is_parent:
-                                cell.fill = parent_fill
-                                cell.font = parent_font
-                            else:
-                                cell.font = child_font
-
-                    for col in ws.columns:
-                        max_len = max(len(str(cell.value or '')) for cell in col)
-                        col_letter = col[0].column_letter
-                        ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 50)
-                except Exception:
-                    pass
-
-            buf.seek(0)
-            return buf.getvalue()
-
-        def export_sku_to_excel(df_sku):
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-                cols = ['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']
-                actual_cols = [c for c in cols if c in df_sku.columns]
-                out_df = df_sku[actual_cols].copy()
-                rename_map = {
-                    'SKU': 'SKU Code',
-                    'Product': 'ชื่อสินค้า (Description)',
-                    'Revenue': 'ยอดรวมยืนยัน (฿)',
-                    'Avg CR': 'CR บนยอดยืนยัน (%)',
-                    'Visitors': 'คนเข้าชม',
-                    'A2C': 'ตะกร้า (A2C)',
-                    'Avg Price': 'ราคาเฉลี่ย/ชิ้น',
-                    'Buyers': 'ผู้ซื้อ',
-                    'Units_Sold': 'Qty ยืนยัน',
-                    'Stock_Available': 'สต็อก'
-                }
-                out_df = out_df.rename(columns=rename_map)
-                out_df.to_excel(writer, index=False, sheet_name='SKU_Summary')
-                ws = writer.sheets['SKU_Summary']
-                try:
-                    from openpyxl.styles import Font, PatternFill, Alignment
-                    header_fill = PatternFill(start_color='1F2937', end_color='1F2937', fill_type='solid')
-                    header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
-                    for cell in ws[1]:
-                        cell.fill = header_fill
-                        cell.font = header_font
-                        cell.alignment = Alignment(horizontal='center', vertical='center')
-                    for col in ws.columns:
-                        max_len = max(len(str(cell.value or '')) for cell in col)
-                        col_letter = col[0].column_letter
-                        ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 50)
-                except Exception:
-                    pass
-            buf.seek(0)
-            return buf.getvalue()
-
-        def render_tree_view_html(df_input, search_term="", is_fullscreen=False):
-            parent_df, variants_dict, open_pids, total_parents, is_empty = prepare_tree_view_data(df_input, search_term)
-            if is_empty or parent_df.empty:
-                empty_html = """<!DOCTYPE html><html><body style="background:transparent;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#888;display:flex;align-items:center;justify-content:center;height:100px;"><p>ไม่มีข้อมูลสินค้าตามตัวกรองที่เลือก</p></body></html>"""
-                return empty_html, False, 0
-
-            st_clean = search_term.strip().lower()
-            is_truncated = False
-            max_limit = 500 if is_fullscreen else 100
-            if not st_clean and total_parents > max_limit:
-                parent_df = parent_df.head(max_limit)
-                is_truncated = True
-
-            rows_html = []
-            for _, row in parent_df.iterrows():
-                pid = str(row['Parent_ID'])
-                pname = html_lib.escape(str(row['Product']))
-                seller_sku_p = html_lib.escape(str(row.get('Parent_SKU_Display', row['SKU'])))
-                rev_val = row['Revenue']
-                vis_val = row['Visitors']
-                buyers_val = row['Buyers']
-                cr_val = (buyers_val / vis_val * 100) if vis_val > 0 else 0.0
-                cr_str = f"{cr_val:.2f}%" if vis_val > 0 else "0.00%"
-                a2c_val = row['A2C']
-                unit_val = row['Units_Sold']
-                stock_val = row['Stock_Available']
-                stock_color = "#22c55e" if stock_val > 0 else "#ef4444"
-
-                has_children = row['is_multi'] and pid in variants_dict
-
-                if has_children:
-                    children = variants_dict[pid]
-                    var_rows = []
-                    for _, c in children.iterrows():
-                        c_sku = html_lib.escape(str(c['SKU']))
-                        c_rev = c['Revenue']
-                        c_vis = c.get('Visitors', 0.0)
-                        c_buyers = c.get('Buyers', 0.0)
-                        c_cr = (c_buyers / c_vis * 100) if c_vis > 0 else 0.0
-                        c_cr_str = f"{c_cr:.2f}%" if c_vis > 0 else "-"
-                        c_vis_str = f"{c_vis:,.0f}" if c_vis > 0 else "-"
-                        c_a2c = c['A2C']
-                        c_unit = c['Units_Sold']
-                        c_stock = c['Stock_Available']
-                        c_stock_color = "#22c55e" if c_stock > 0 else "#ef4444"
-
-                        var_rows.append(f"""
-                        <div class="row child-row">
-                          <div class="col col-prod"><span class="sku-tag">↳ {c_sku}</span></div>
-                          <div class="col col-rev">{c_rev:,.0f}</div>
-                          <div class="col col-cr" style="color: var(--text-dim);">{c_cr_str}</div>
-                          <div class="col col-vis" style="color: var(--text-dim);">{c_vis_str}</div>
-                          <div class="col col-a2c">{c_a2c:,.0f}</div>
-                          <div class="col col-unit">{c_unit:,.0f}</div>
-                          <div class="col col-stock" style="color: {c_stock_color};">{c_stock:,.0f}</div>
+    
+            def export_sku_to_excel(df_sku):
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+                    cols = ['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']
+                    actual_cols = [c for c in cols if c in df_sku.columns]
+                    out_df = df_sku[actual_cols].copy()
+                    rename_map = {
+                        'SKU': 'SKU Code',
+                        'Product': 'ชื่อสินค้า (Description)',
+                        'Revenue': 'ยอดรวมยืนยัน (฿)',
+                        'Avg CR': 'CR บนยอดยืนยัน (%)',
+                        'Visitors': 'คนเข้าชม',
+                        'A2C': 'ตะกร้า (A2C)',
+                        'Avg Price': 'ราคาเฉลี่ย/ชิ้น',
+                        'Buyers': 'ผู้ซื้อ',
+                        'Units_Sold': 'Qty ยืนยัน',
+                        'Stock_Available': 'สต็อก'
+                    }
+                    out_df = out_df.rename(columns=rename_map)
+                    out_df.to_excel(writer, index=False, sheet_name='SKU_Summary')
+                    ws = writer.sheets['SKU_Summary']
+                    try:
+                        from openpyxl.styles import Font, PatternFill, Alignment
+                        header_fill = PatternFill(start_color='1F2937', end_color='1F2937', fill_type='solid')
+                        header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+                        for cell in ws[1]:
+                            cell.fill = header_fill
+                            cell.font = header_font
+                            cell.alignment = Alignment(horizontal='center', vertical='center')
+                        for col in ws.columns:
+                            max_len = max(len(str(cell.value or '')) for cell in col)
+                            col_letter = col[0].column_letter
+                            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 50)
+                    except Exception:
+                        pass
+                buf.seek(0)
+                return buf.getvalue()
+    
+            def render_tree_view_html(df_input, search_term="", is_fullscreen=False):
+                parent_df, variants_dict, open_pids, total_parents, is_empty = prepare_tree_view_data(df_input, search_term)
+                if is_empty or parent_df.empty:
+                    empty_html = """<!DOCTYPE html><html><body style="background:transparent;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#888;display:flex;align-items:center;justify-content:center;height:100px;"><p>ไม่มีข้อมูลสินค้าตามตัวกรองที่เลือก</p></body></html>"""
+                    return empty_html, False, 0
+    
+                st_clean = search_term.strip().lower()
+                is_truncated = False
+                max_limit = 500 if is_fullscreen else 100
+                if not st_clean and total_parents > max_limit:
+                    parent_df = parent_df.head(max_limit)
+                    is_truncated = True
+    
+                rows_html = []
+                for _, row in parent_df.iterrows():
+                    pid = str(row['Parent_ID'])
+                    pname = html_lib.escape(str(row['Product']))
+                    seller_sku_p = html_lib.escape(str(row.get('Parent_SKU_Display', row['SKU'])))
+                    rev_val = row['Revenue']
+                    vis_val = row['Visitors']
+                    buyers_val = row['Buyers']
+                    cr_val = (buyers_val / vis_val * 100) if vis_val > 0 else 0.0
+                    cr_str = f"{cr_val:.2f}%" if vis_val > 0 else "0.00%"
+                    a2c_val = row['A2C']
+                    unit_val = row['Units_Sold']
+                    stock_val = row['Stock_Available']
+                    stock_color = "#22c55e" if stock_val > 0 else "#ef4444"
+    
+                    has_children = row['is_multi'] and pid in variants_dict
+    
+                    if has_children:
+                        children = variants_dict[pid]
+                        var_rows = []
+                        for _, c in children.iterrows():
+                            c_sku = html_lib.escape(str(c['SKU']))
+                            c_rev = c['Revenue']
+                            c_vis = c.get('Visitors', 0.0)
+                            c_buyers = c.get('Buyers', 0.0)
+                            c_cr = (c_buyers / c_vis * 100) if c_vis > 0 else 0.0
+                            c_cr_str = f"{c_cr:.2f}%" if c_vis > 0 else "-"
+                            c_vis_str = f"{c_vis:,.0f}" if c_vis > 0 else "-"
+                            c_a2c = c['A2C']
+                            c_unit = c['Units_Sold']
+                            c_stock = c['Stock_Available']
+                            c_stock_color = "#22c55e" if c_stock > 0 else "#ef4444"
+    
+                            var_rows.append(f"""
+                            <div class="row child-row">
+                              <div class="col col-prod"><span class="sku-tag">↳ {c_sku}</span></div>
+                              <div class="col col-rev">{c_rev:,.0f}</div>
+                              <div class="col col-cr" style="color: var(--text-dim);">{c_cr_str}</div>
+                              <div class="col col-vis" style="color: var(--text-dim);">{c_vis_str}</div>
+                              <div class="col col-a2c">{c_a2c:,.0f}</div>
+                              <div class="col col-unit">{c_unit:,.0f}</div>
+                              <div class="col col-stock" style="color: {c_stock_color};">{c_stock:,.0f}</div>
+                            </div>
+                            """)
+    
+                        child_html = "".join(var_rows)
+                        is_open = 'open' if pid in open_pids else ''
+    
+                        rows_html.append(f"""
+                        <div class="parent-item" data-name="{seller_sku_p} {pname}" data-rev="{rev_val}" data-cr="{cr_val:.2f}" data-vis="{vis_val}" data-a2c="{a2c_val}" data-unit="{unit_val}" data-stock="{stock_val}">
+                          <details {is_open}>
+                            <summary class="row">
+                              <div class="col col-prod">
+                                <span class="badge">[+] {row['variant_count']} ตัวเลือก</span>
+                                <span class="parent-sku-tag">{seller_sku_p}</span>
+                                <span class="pname" title="{pname}">{pname}</span>
+                              </div>
+                              <div class="col col-rev">{rev_val:,.0f}</div>
+                              <div class="col col-cr">{cr_str}</div>
+                              <div class="col col-vis">{vis_val:,.0f}</div>
+                              <div class="col col-a2c">{a2c_val:,.0f}</div>
+                              <div class="col col-unit">{unit_val:,.0f}</div>
+                              <div class="col col-stock" style="color: {stock_color};">{stock_val:,.0f}</div>
+                            </summary>
+                            <div class="child-container">
+                              {child_html}
+                            </div>
+                          </details>
                         </div>
                         """)
-
-                    child_html = "".join(var_rows)
-                    is_open = 'open' if pid in open_pids else ''
-
-                    rows_html.append(f"""
-                    <div class="parent-item" data-name="{seller_sku_p} {pname}" data-rev="{rev_val}" data-cr="{cr_val:.2f}" data-vis="{vis_val}" data-a2c="{a2c_val}" data-unit="{unit_val}" data-stock="{stock_val}">
-                      <details {is_open}>
-                        <summary class="row">
+                    else:
+                        s_sku = seller_sku_p
+                        rows_html.append(f"""
+                        <div class="row standalone-row" data-name="{s_sku} {pname}" data-rev="{rev_val}" data-cr="{cr_val:.2f}" data-vis="{vis_val}" data-a2c="{a2c_val}" data-unit="{unit_val}" data-stock="{stock_val}">
                           <div class="col col-prod">
-                            <span class="badge">[+] {row['variant_count']} ตัวเลือก</span>
-                            <span class="parent-sku-tag">{seller_sku_p}</span>
-                            <span class="pname" title="{pname}">{pname}</span>
+                            <span class="single-sku">{s_sku}</span>
+                            <span class="pname-single" title="{pname}">{pname}</span>
                           </div>
                           <div class="col col-rev">{rev_val:,.0f}</div>
                           <div class="col col-cr">{cr_str}</div>
@@ -1718,408 +1756,393 @@ if check_password():
                           <div class="col col-a2c">{a2c_val:,.0f}</div>
                           <div class="col col-unit">{unit_val:,.0f}</div>
                           <div class="col col-stock" style="color: {stock_color};">{stock_val:,.0f}</div>
-                        </summary>
-                        <div class="child-container">
-                          {child_html}
                         </div>
-                      </details>
-                    </div>
-                    """)
-                else:
-                    s_sku = seller_sku_p
-                    rows_html.append(f"""
-                    <div class="row standalone-row" data-name="{s_sku} {pname}" data-rev="{rev_val}" data-cr="{cr_val:.2f}" data-vis="{vis_val}" data-a2c="{a2c_val}" data-unit="{unit_val}" data-stock="{stock_val}">
-                      <div class="col col-prod">
-                        <span class="single-sku">{s_sku}</span>
-                        <span class="pname-single" title="{pname}">{pname}</span>
-                      </div>
-                      <div class="col col-rev">{rev_val:,.0f}</div>
-                      <div class="col col-cr">{cr_str}</div>
-                      <div class="col col-vis">{vis_val:,.0f}</div>
-                      <div class="col col-a2c">{a2c_val:,.0f}</div>
-                      <div class="col col-unit">{unit_val:,.0f}</div>
-                      <div class="col col-stock" style="color: {stock_color};">{stock_val:,.0f}</div>
-                    </div>
-                    """)
-
-            all_rows = "".join(rows_html)
-            c_height = "700px" if is_fullscreen else "330px"
-
-            full_html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  :root {{
-    --bg-card: #131720;
-    --bg-header: #1a1f2c;
-    --bg-hover: #1e2433;
-    --bg-child: #0b0e14;
-    --border: #262c3a;
-    --border-dashed: #363d50;
-    --text: #e6edf3;
-    --text-muted: #94a3b8;
-    --text-dim: #64748b;
-    --badge-bg: rgba(56, 189, 248, 0.15);
-    --badge-text: #38bdf8;
-    --badge-border: rgba(56, 189, 248, 0.35);
-    --parent-sku-text: #38bdf8;
-    --parent-sku-bg: rgba(56, 189, 248, 0.1);
-    --parent-sku-border: rgba(56, 189, 248, 0.25);
-    --sku-text: #38bdf8;
-  }}
-  @media (prefers-color-scheme: light) {{
-    :root {{
-      --bg-card: #ffffff;
-      --bg-header: #f8f9fa;
-      --bg-hover: #f1f5f9;
-      --bg-child: #f8fafc;
-      --border: #e2e8f0;
-      --border-dashed: #cbd5e1;
-      --text: #1e293b;
-      --text-muted: #64748b;
-      --text-dim: #94a3b8;
-      --badge-bg: #e0f2fe;
-      --badge-text: #0284c7;
-      --badge-border: #bae6fd;
-      --parent-sku-text: #0284c7;
-      --parent-sku-bg: #f0f9ff;
-      --parent-sku-border: #bae6fd;
-      --sku-text: #0284c7;
+                        """)
+    
+                all_rows = "".join(rows_html)
+                c_height = "700px" if is_fullscreen else "330px"
+    
+                full_html = f"""<!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <style>
+      :root {{
+        --bg-card: #131720;
+        --bg-header: #1a1f2c;
+        --bg-hover: #1e2433;
+        --bg-child: #0b0e14;
+        --border: #262c3a;
+        --border-dashed: #363d50;
+        --text: #e6edf3;
+        --text-muted: #94a3b8;
+        --text-dim: #64748b;
+        --badge-bg: rgba(56, 189, 248, 0.15);
+        --badge-text: #38bdf8;
+        --badge-border: rgba(56, 189, 248, 0.35);
+        --parent-sku-text: #38bdf8;
+        --parent-sku-bg: rgba(56, 189, 248, 0.1);
+        --parent-sku-border: rgba(56, 189, 248, 0.25);
+        --sku-text: #38bdf8;
+      }}
+      @media (prefers-color-scheme: light) {{
+        :root {{
+          --bg-card: #ffffff;
+          --bg-header: #f8f9fa;
+          --bg-hover: #f1f5f9;
+          --bg-child: #f8fafc;
+          --border: #e2e8f0;
+          --border-dashed: #cbd5e1;
+          --text: #1e293b;
+          --text-muted: #64748b;
+          --text-dim: #94a3b8;
+          --badge-bg: #e0f2fe;
+          --badge-text: #0284c7;
+          --badge-border: #bae6fd;
+          --parent-sku-text: #0284c7;
+          --parent-sku-bg: #f0f9ff;
+          --parent-sku-border: #bae6fd;
+          --sku-text: #0284c7;
+        }}
+      }}
+      * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+      body {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: transparent;
+        color: var(--text);
+        overflow: hidden;
+      }}
+      .container {{
+        height: {c_height};
+        overflow-y: auto;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-card);
+      }}
+      .container::-webkit-scrollbar {{ width: 6px; height: 6px; }}
+      .container::-webkit-scrollbar-track {{ background: transparent; }}
+      .container::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 3px; }}
+    
+      .row {{
+        display: flex;
+        align-items: center;
+        width: 100%;
+        font-size: 13px;
+        border-bottom: 1px solid var(--border);
+      }}
+      .header-row {{
+        background: var(--bg-header);
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        font-weight: 600;
+        font-size: 12px;
+        color: var(--text-muted);
+      }}
+      .parent-item summary {{
+        cursor: pointer;
+        list-style: none;
+        user-select: none;
+      }}
+      .parent-item summary::-webkit-details-marker {{ display: none; }}
+      .parent-item summary:hover, .standalone-row:hover, .child-row:hover {{
+        background: var(--bg-hover);
+      }}
+    
+      /* Laser-aligned Flexbox Columns: 32% + 14% + 10% + 11% + 10% + 10% + 13% = 100% */
+      .col-prod  {{ width: 32%; padding: 8px 10px; text-align: left; overflow: hidden; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }}
+      .col-rev   {{ width: 14%; padding: 8px 8px; text-align: right; font-weight: bold; flex-shrink: 0; }}
+      .col-cr    {{ width: 10%; padding: 8px 8px; text-align: right; font-weight: 600; color: #10b981; flex-shrink: 0; }}
+      .col-vis   {{ width: 11%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
+      .col-a2c   {{ width: 10%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
+      .col-unit  {{ width: 10%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
+      .col-stock {{ width: 13%; padding: 8px 14px 8px 8px; text-align: right; font-weight: bold; flex-shrink: 0; }}
+    
+      .child-container {{
+        background: var(--bg-child);
+        border-top: 1px dashed var(--border-dashed);
+        border-bottom: 1px solid var(--border);
+      }}
+      .child-row {{
+        font-size: 12px;
+        border-bottom: 1px solid var(--border);
+      }}
+      .child-row:last-child {{ border-bottom: none; }}
+      .child-row .col-prod {{ padding-left: 28px; }}
+      .child-row .col-rev {{ font-weight: 500; }}
+    
+      .badge {{
+        font-size: 11px;
+        background: var(--badge-bg);
+        color: var(--badge-text);
+        border: 1px solid var(--badge-border);
+        padding: 2px 7px;
+        border-radius: 4px;
+        font-weight: 600;
+        flex-shrink: 0;
+      }}
+      .parent-sku-tag {{
+        font-family: ui-monospace, monospace;
+        font-weight: 700;
+        font-size: 11px;
+        color: var(--parent-sku-text);
+        background: var(--parent-sku-bg);
+        border: 1px solid var(--parent-sku-border);
+        padding: 2px 6px;
+        border-radius: 4px;
+        flex-shrink: 0;
+      }}
+      .pname {{
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: 13px;
+        color: var(--text);
+      }}
+      .pname-single {{
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: 12px;
+        color: var(--text-muted);
+      }}
+      .single-sku {{
+        font-family: ui-monospace, monospace;
+        font-weight: 600;
+        font-size: 13px;
+        color: var(--text);
+        flex-shrink: 0;
+      }}
+      .sku-tag {{
+        font-family: ui-monospace, monospace;
+        font-weight: 600;
+        color: var(--sku-text);
+      }}
+      .sortable-header {{
+        cursor: pointer;
+        user-select: none;
+        transition: color 0.15s ease, background 0.15s ease;
+      }}
+      .sortable-header:hover {{
+        color: var(--badge-text);
+        background: var(--bg-hover);
+      }}
+      .sort-icon {{
+        font-size: 10px;
+        margin-left: 4px;
+        display: inline-block;
+        color: var(--badge-text);
+      }}
+    </style>
+    </head>
+    <body>
+    <div class="container" id="treeContainer">
+      <div class="row header-row">
+        <div class="col-prod sortable-header" onclick="sortTable('name')" title="คลิกเพื่อเรียงตามชื่อสินค้า / SKU">สินค้า / รหัส SKU <span id="sort-name" class="sort-icon"></span></div>
+        <div class="col-rev sortable-header" onclick="sortTable('rev')" title="คลิกเพื่อเรียงตามยอดรวมยืนยัน">ยอดรวมยืนยัน (฿) <span id="sort-rev" class="sort-icon">▼</span></div>
+        <div class="col-cr sortable-header" onclick="sortTable('cr')" title="คลิกเพื่อเรียงตาม CR บนยอดยืนยัน">CR บนยอดยืนยัน <span id="sort-cr" class="sort-icon"></span></div>
+        <div class="col-vis sortable-header" onclick="sortTable('vis')" title="คลิกเพื่อเรียงตามคนเข้าชม">คนเข้าชม <span id="sort-vis" class="sort-icon"></span></div>
+        <div class="col-a2c sortable-header" onclick="sortTable('a2c')" title="คลิกเพื่อเรียงตามตะกร้า">ตะกร้า (A2C) <span id="sort-a2c" class="sort-icon"></span></div>
+        <div class="col-unit sortable-header" onclick="sortTable('unit')" title="คลิกเพื่อเรียงตาม Qty ยืนยัน">Qty ยืนยัน <span id="sort-unit" class="sort-icon"></span></div>
+        <div class="col-stock sortable-header" onclick="sortTable('stock')" title="คลิกเพื่อเรียงตามสต็อก">สต็อก <span id="sort-stock" class="sort-icon"></span></div>
+      </div>
+      <div id="treeRows">
+        {all_rows}
+      </div>
+    </div>
+    
+    <script>
+    let currentSortCol = 'rev';
+    let currentSortDir = 'desc';
+    
+    function sortTable(col) {{
+      if (currentSortCol === col) {{
+        currentSortDir = (currentSortDir === 'desc') ? 'asc' : 'desc';
+      }} else {{
+        currentSortCol = col;
+        currentSortDir = (col === 'name') ? 'asc' : 'desc';
+      }}
+    
+      ['name', 'rev', 'cr', 'vis', 'a2c', 'unit', 'stock'].forEach(c => {{
+        const el = document.getElementById('sort-' + c);
+        if (el) {{
+          el.textContent = (c === currentSortCol) ? (currentSortDir === 'desc' ? ' ▼' : ' ▲') : '';
+        }}
+      }});
+    
+      const rowsContainer = document.getElementById('treeRows');
+      if (!rowsContainer) return;
+      const items = Array.from(rowsContainer.children);
+    
+      items.sort((a, b) => {{
+        let valA = a.getAttribute('data-' + currentSortCol) || '';
+        let valB = b.getAttribute('data-' + currentSortCol) || '';
+    
+        if (currentSortCol === 'name') {{
+          return currentSortDir === 'asc' 
+            ? valA.localeCompare(valB, 'th') 
+            : valB.localeCompare(valA, 'th');
+        }} else {{
+          let numA = parseFloat(valA) || 0;
+          let numB = parseFloat(valB) || 0;
+          return currentSortDir === 'desc' ? numB - numA : numA - numB;
+        }}
+      }});
+    
+      items.forEach(item => rowsContainer.appendChild(item));
     }}
-  }}
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: transparent;
-    color: var(--text);
-    overflow: hidden;
-  }}
-  .container {{
-    height: {c_height};
-    overflow-y: auto;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg-card);
-  }}
-  .container::-webkit-scrollbar {{ width: 6px; height: 6px; }}
-  .container::-webkit-scrollbar-track {{ background: transparent; }}
-  .container::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 3px; }}
-
-  .row {{
-    display: flex;
-    align-items: center;
-    width: 100%;
-    font-size: 13px;
-    border-bottom: 1px solid var(--border);
-  }}
-  .header-row {{
-    background: var(--bg-header);
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    font-weight: 600;
-    font-size: 12px;
-    color: var(--text-muted);
-  }}
-  .parent-item summary {{
-    cursor: pointer;
-    list-style: none;
-    user-select: none;
-  }}
-  .parent-item summary::-webkit-details-marker {{ display: none; }}
-  .parent-item summary:hover, .standalone-row:hover, .child-row:hover {{
-    background: var(--bg-hover);
-  }}
-
-  /* Laser-aligned Flexbox Columns: 32% + 14% + 10% + 11% + 10% + 10% + 13% = 100% */
-  .col-prod  {{ width: 32%; padding: 8px 10px; text-align: left; overflow: hidden; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }}
-  .col-rev   {{ width: 14%; padding: 8px 8px; text-align: right; font-weight: bold; flex-shrink: 0; }}
-  .col-cr    {{ width: 10%; padding: 8px 8px; text-align: right; font-weight: 600; color: #10b981; flex-shrink: 0; }}
-  .col-vis   {{ width: 11%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
-  .col-a2c   {{ width: 10%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
-  .col-unit  {{ width: 10%; padding: 8px 8px; text-align: right; color: var(--text-muted); flex-shrink: 0; }}
-  .col-stock {{ width: 13%; padding: 8px 14px 8px 8px; text-align: right; font-weight: bold; flex-shrink: 0; }}
-
-  .child-container {{
-    background: var(--bg-child);
-    border-top: 1px dashed var(--border-dashed);
-    border-bottom: 1px solid var(--border);
-  }}
-  .child-row {{
-    font-size: 12px;
-    border-bottom: 1px solid var(--border);
-  }}
-  .child-row:last-child {{ border-bottom: none; }}
-  .child-row .col-prod {{ padding-left: 28px; }}
-  .child-row .col-rev {{ font-weight: 500; }}
-
-  .badge {{
-    font-size: 11px;
-    background: var(--badge-bg);
-    color: var(--badge-text);
-    border: 1px solid var(--badge-border);
-    padding: 2px 7px;
-    border-radius: 4px;
-    font-weight: 600;
-    flex-shrink: 0;
-  }}
-  .parent-sku-tag {{
-    font-family: ui-monospace, monospace;
-    font-weight: 700;
-    font-size: 11px;
-    color: var(--parent-sku-text);
-    background: var(--parent-sku-bg);
-    border: 1px solid var(--parent-sku-border);
-    padding: 2px 6px;
-    border-radius: 4px;
-    flex-shrink: 0;
-  }}
-  .pname {{
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-size: 13px;
-    color: var(--text);
-  }}
-  .pname-single {{
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-size: 12px;
-    color: var(--text-muted);
-  }}
-  .single-sku {{
-    font-family: ui-monospace, monospace;
-    font-weight: 600;
-    font-size: 13px;
-    color: var(--text);
-    flex-shrink: 0;
-  }}
-  .sku-tag {{
-    font-family: ui-monospace, monospace;
-    font-weight: 600;
-    color: var(--sku-text);
-  }}
-  .sortable-header {{
-    cursor: pointer;
-    user-select: none;
-    transition: color 0.15s ease, background 0.15s ease;
-  }}
-  .sortable-header:hover {{
-    color: var(--badge-text);
-    background: var(--bg-hover);
-  }}
-  .sort-icon {{
-    font-size: 10px;
-    margin-left: 4px;
-    display: inline-block;
-    color: var(--badge-text);
-  }}
-</style>
-</head>
-<body>
-<div class="container" id="treeContainer">
-  <div class="row header-row">
-    <div class="col-prod sortable-header" onclick="sortTable('name')" title="คลิกเพื่อเรียงตามชื่อสินค้า / SKU">สินค้า / รหัส SKU <span id="sort-name" class="sort-icon"></span></div>
-    <div class="col-rev sortable-header" onclick="sortTable('rev')" title="คลิกเพื่อเรียงตามยอดรวมยืนยัน">ยอดรวมยืนยัน (฿) <span id="sort-rev" class="sort-icon">▼</span></div>
-    <div class="col-cr sortable-header" onclick="sortTable('cr')" title="คลิกเพื่อเรียงตาม CR บนยอดยืนยัน">CR บนยอดยืนยัน <span id="sort-cr" class="sort-icon"></span></div>
-    <div class="col-vis sortable-header" onclick="sortTable('vis')" title="คลิกเพื่อเรียงตามคนเข้าชม">คนเข้าชม <span id="sort-vis" class="sort-icon"></span></div>
-    <div class="col-a2c sortable-header" onclick="sortTable('a2c')" title="คลิกเพื่อเรียงตามตะกร้า">ตะกร้า (A2C) <span id="sort-a2c" class="sort-icon"></span></div>
-    <div class="col-unit sortable-header" onclick="sortTable('unit')" title="คลิกเพื่อเรียงตาม Qty ยืนยัน">Qty ยืนยัน <span id="sort-unit" class="sort-icon"></span></div>
-    <div class="col-stock sortable-header" onclick="sortTable('stock')" title="คลิกเพื่อเรียงตามสต็อก">สต็อก <span id="sort-stock" class="sort-icon"></span></div>
-  </div>
-  <div id="treeRows">
-    {all_rows}
-  </div>
-</div>
-
-<script>
-let currentSortCol = 'rev';
-let currentSortDir = 'desc';
-
-function sortTable(col) {{
-  if (currentSortCol === col) {{
-    currentSortDir = (currentSortDir === 'desc') ? 'asc' : 'desc';
-  }} else {{
-    currentSortCol = col;
-    currentSortDir = (col === 'name') ? 'asc' : 'desc';
-  }}
-
-  ['name', 'rev', 'cr', 'vis', 'a2c', 'unit', 'stock'].forEach(c => {{
-    const el = document.getElementById('sort-' + c);
-    if (el) {{
-      el.textContent = (c === currentSortCol) ? (currentSortDir === 'desc' ? ' ▼' : ' ▲') : '';
-    }}
-  }});
-
-  const rowsContainer = document.getElementById('treeRows');
-  if (!rowsContainer) return;
-  const items = Array.from(rowsContainer.children);
-
-  items.sort((a, b) => {{
-    let valA = a.getAttribute('data-' + currentSortCol) || '';
-    let valB = b.getAttribute('data-' + currentSortCol) || '';
-
-    if (currentSortCol === 'name') {{
-      return currentSortDir === 'asc' 
-        ? valA.localeCompare(valB, 'th') 
-        : valB.localeCompare(valA, 'th');
-    }} else {{
-      let numA = parseFloat(valA) || 0;
-      let numB = parseFloat(valB) || 0;
-      return currentSortDir === 'desc' ? numB - numA : numA - numB;
-    }}
-  }});
-
-  items.forEach(item => rowsContainer.appendChild(item));
-}}
-</script>
-</body>
-</html>"""
-            return full_html, is_truncated, total_parents
-
-        with col_d2:
-            active_stock = active_stock_name or st.session_state.get('active_stock_file_name', '')
-            stock_badge = f" <span style='font-size:12px; color:#0099ff; font-weight:normal;'>(สต็อกอ้างอิง: {active_stock})</span>" if active_stock else ""
-            
-            is_lazada_only = (filtered_df['Platform'].nunique() == 1 and filtered_df['Platform'].iloc[0] == 'Lazada')
-
-            @st.dialog("🌳 เจาะลึก Parent & Variants (Tree View - ขยายเต็มจอ)", width="large")
-            def open_fullscreen_tree_dialog():
-                col_dlg_s, col_dlg_exp, col_dlg_b = st.columns([2.2, 1.2, 1.0])
-                with col_dlg_s:
-                    dlg_s = st.text_input(
-                        "ค้นหาตามชื่อสินค้า / รหัส SKU",
-                        value=st.session_state.get('tree_search_term', ''),
-                        key="tree_search_term_dlg",
-                        placeholder="🔍 พิมพ์ชื่อสินค้า หรือ รหัส SKU เพื่อค้นหา...",
-                        label_visibility="collapsed"
-                    )
-                with col_dlg_exp:
-                    excel_tree_dlg = export_tree_view_to_excel(df_for_sku, dlg_s)
-                    st.download_button(
-                        label="📥 ส่งออก Excel",
-                        data=excel_tree_dlg,
-                        file_name=f"Tree_View_Hierarchy_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="btn_tree_dlg_export_excel",
-                        use_container_width=True,
-                        help="ดาวน์โหลดข้อมูล Tree View (ลำดับชั้นสินค้า แม่-ลูก) ทั้งหมดเป็นไฟล์ Excel"
-                    )
-                with col_dlg_b:
-                    if active_stock:
-                        st.markdown(f"<div style='text-align:right; font-size:13px; color:#0099ff; padding-top:6px;'>📦 สต็อก: {active_stock}</div>", unsafe_allow_html=True)
-                t_html, t_trunc, t_tot = render_tree_view_html(df_for_sku, dlg_s, is_fullscreen=True)
-                components.html(t_html, height=720, scrolling=True)
-                if t_trunc:
-                    st.caption(f"* แสดง 500 อันดับแรกจากทั้งหมด {t_tot:,} สินค้า (กดปุ่ม '📥 ส่งออก Excel' เพื่อดูข้อมูลครบ 100% ทุกรายการ)")
-
-            @st.dialog("📋 ตารางสรุปราย SKU (Data Grid - ขยายเต็มจอ)", width="large")
-            def open_fullscreen_sku_dialog():
-                col_sdlg_exp, col_sdlg_stk = st.columns([1.5, 3.0])
-                with col_sdlg_exp:
-                    excel_sku_dlg = export_sku_to_excel(disp_sku)
-                    st.download_button(
-                        label="📥 ส่งออก Excel (ราย SKU)",
-                        data=excel_sku_dlg,
-                        file_name=f"SKU_Summary_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="btn_sku_dlg_export_excel",
-                        use_container_width=True
-                    )
-                with col_sdlg_stk:
-                    if active_stock:
-                        st.markdown(f"<div style='text-align:right; font-size:13px; color:#0099ff; padding-top:6px;'>📦 สต็อกอ้างอิง: {active_stock}</div>", unsafe_allow_html=True)
-                st.dataframe(
-                    disp_sku[['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
-                    hide_index=True, use_container_width=True, height=720,
-                    column_config=col_config_sku
-                )
-
-            if is_lazada_only:
-                col_laz_title, col_laz_exp, col_laz_btn = st.columns([2.4, 1.1, 1.2])
-                with col_laz_title:
-                    st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
-                with col_laz_exp:
-                    excel_laz = export_sku_to_excel(disp_sku)
-                    st.download_button(
-                        label="📥 ส่งออก Excel",
-                        data=excel_laz,
-                        file_name=f"Lazada_SKU_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="btn_laz_export_excel",
-                        use_container_width=True
-                    )
-                with col_laz_btn:
-                    if st.button("⛶ ขยายเต็มหน้าจอ", key="btn_laz_sku_full", use_container_width=True):
-                        open_fullscreen_sku_dialog()
-                st.dataframe(
-                    disp_sku[['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
-                    hide_index=True, use_container_width=True, height=380,
-                    on_select="rerun", selection_mode="multi-row", key="tb_sku",
-                    column_config=col_config_sku
-                )
-            else:
-                tab_tree, tab_grid = st.tabs([
-                    "🌳 เจาะลึก Parent & Variants (Tree View)", 
-                    "📋 ตารางสรุปราย SKU (Data Grid)"
-                ])
+    </script>
+    </body>
+    </html>"""
+                return full_html, is_truncated, total_parents
+    
+            with col_d2:
+                active_stock = active_stock_name or st.session_state.get('active_stock_file_name', '')
+                stock_badge = f" <span style='font-size:12px; color:#0099ff; font-weight:normal;'>(สต็อกอ้างอิง: {active_stock})</span>" if active_stock else ""
                 
-                with tab_tree:
-                    col_t_search, col_t_btn, col_t_exp, col_t_badge = st.columns([1.8, 1.1, 1.1, 1.0])
-                    with col_t_search:
-                        tree_search = st.text_input(
-                            "ค้นหาตามชื่อสินค้า / รหัส SKU", 
-                            key="tree_search_term", 
-                            placeholder="🔍 พิมพ์ชื่อสินค้า หรือ รหัส SKU เพื่อค้นหา...", 
+                is_lazada_only = (filtered_df['Platform'].nunique() == 1 and filtered_df['Platform'].iloc[0] == 'Lazada')
+    
+                @st.dialog("🌳 เจาะลึก Parent & Variants (Tree View - ขยายเต็มจอ)", width="large")
+                def open_fullscreen_tree_dialog():
+                    col_dlg_s, col_dlg_exp, col_dlg_b = st.columns([2.2, 1.2, 1.0])
+                    with col_dlg_s:
+                        dlg_s = st.text_input(
+                            "ค้นหาตามชื่อสินค้า / รหัส SKU",
+                            value=st.session_state.get('tree_search_term', ''),
+                            key="tree_search_term_dlg",
+                            placeholder="🔍 พิมพ์ชื่อสินค้า หรือ รหัส SKU เพื่อค้นหา...",
                             label_visibility="collapsed"
                         )
-                    with col_t_btn:
-                        if st.button("⛶ ขยายเต็มหน้าจอ", key="btn_tree_full", use_container_width=True):
-                            open_fullscreen_tree_dialog()
-                    with col_t_exp:
-                        excel_tree_data = export_tree_view_to_excel(df_for_sku, tree_search)
+                    with col_dlg_exp:
+                        excel_tree_dlg = export_tree_view_to_excel(df_for_sku, dlg_s)
                         st.download_button(
                             label="📥 ส่งออก Excel",
-                            data=excel_tree_data,
+                            data=excel_tree_dlg,
                             file_name=f"Tree_View_Hierarchy_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key="btn_tree_export_excel",
+                            key="btn_tree_dlg_export_excel",
                             use_container_width=True,
                             help="ดาวน์โหลดข้อมูล Tree View (ลำดับชั้นสินค้า แม่-ลูก) ทั้งหมดเป็นไฟล์ Excel"
                         )
-                    with col_t_badge:
+                    with col_dlg_b:
                         if active_stock:
-                            st.markdown(f"<div style='text-align:right; font-size:12px; color:#0099ff; padding-top:6px;'>📦 สต็อก: {active_stock}</div>", unsafe_allow_html=True)
-                    
-                    tree_html, is_trunc, total_p = render_tree_view_html(df_for_sku, tree_search, is_fullscreen=False)
-                    components.html(tree_html, height=335)
-                    if is_trunc:
-                        st.caption(f"* แสดง 100 อันดับแรกจากทั้งหมด {total_p:,} สินค้า (กดปุ่ม '📥 ส่งออก Excel' เพื่อดูข้อมูลครบ 100% ทุกรายการ)")
-                    
-                with tab_grid:
-                    col_s_title, col_s_exp, col_s_btn = st.columns([2.4, 1.1, 1.2])
-                    with col_s_title:
-                        st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
-                    with col_s_exp:
-                        excel_grid = export_sku_to_excel(disp_sku)
+                            st.markdown(f"<div style='text-align:right; font-size:13px; color:#0099ff; padding-top:6px;'>📦 สต็อก: {active_stock}</div>", unsafe_allow_html=True)
+                    t_html, t_trunc, t_tot = render_tree_view_html(df_for_sku, dlg_s, is_fullscreen=True)
+                    components.html(t_html, height=720, scrolling=True)
+                    if t_trunc:
+                        st.caption(f"* แสดง 500 อันดับแรกจากทั้งหมด {t_tot:,} สินค้า (กดปุ่ม '📥 ส่งออก Excel' เพื่อดูข้อมูลครบ 100% ทุกรายการ)")
+    
+                @st.dialog("📋 ตารางสรุปราย SKU (Data Grid - ขยายเต็มจอ)", width="large")
+                def open_fullscreen_sku_dialog():
+                    col_sdlg_exp, col_sdlg_stk = st.columns([1.5, 3.0])
+                    with col_sdlg_exp:
+                        excel_sku_dlg = export_sku_to_excel(disp_sku)
                         st.download_button(
-                            label="📥 ส่งออก Excel",
-                            data=excel_grid,
+                            label="📥 ส่งออก Excel (ราย SKU)",
+                            data=excel_sku_dlg,
                             file_name=f"SKU_Summary_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key="btn_sku_grid_export_excel",
+                            key="btn_sku_dlg_export_excel",
                             use_container_width=True
                         )
-                    with col_s_btn:
-                        if st.button("⛶ ขยายเต็มหน้าจอ", key="btn_sku_full", use_container_width=True):
+                    with col_sdlg_stk:
+                        if active_stock:
+                            st.markdown(f"<div style='text-align:right; font-size:13px; color:#0099ff; padding-top:6px;'>📦 สต็อกอ้างอิง: {active_stock}</div>", unsafe_allow_html=True)
+                    st.dataframe(
+                        disp_sku[['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
+                        hide_index=True, use_container_width=True, height=720,
+                        column_config=col_config_sku
+                    )
+    
+                if is_lazada_only:
+                    col_laz_title, col_laz_exp, col_laz_btn = st.columns([2.4, 1.1, 1.2])
+                    with col_laz_title:
+                        st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
+                    with col_laz_exp:
+                        excel_laz = export_sku_to_excel(disp_sku)
+                        st.download_button(
+                            label="📥 ส่งออก Excel",
+                            data=excel_laz,
+                            file_name=f"Lazada_SKU_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="btn_laz_export_excel",
+                            use_container_width=True
+                        )
+                    with col_laz_btn:
+                        if st.button("⛶ ขยายเต็มหน้าจอ", key="btn_laz_sku_full", use_container_width=True):
                             open_fullscreen_sku_dialog()
                     st.dataframe(
                         disp_sku[['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
-                        hide_index=True, use_container_width=True, height=340,
+                        hide_index=True, use_container_width=True, height=380,
                         on_select="rerun", selection_mode="multi-row", key="tb_sku",
                         column_config=col_config_sku
                     )
+                else:
+                    tab_tree, tab_grid = st.tabs([
+                        "🌳 เจาะลึก Parent & Variants (Tree View)", 
+                        "📋 ตารางสรุปราย SKU (Data Grid)"
+                    ])
+                    
+                    with tab_tree:
+                        col_t_search, col_t_btn, col_t_exp, col_t_badge = st.columns([1.8, 1.1, 1.1, 1.0])
+                        with col_t_search:
+                            tree_search = st.text_input(
+                                "ค้นหาตามชื่อสินค้า / รหัส SKU", 
+                                key="tree_search_term", 
+                                placeholder="🔍 พิมพ์ชื่อสินค้า หรือ รหัส SKU เพื่อค้นหา...", 
+                                label_visibility="collapsed"
+                            )
+                        with col_t_btn:
+                            if st.button("⛶ ขยายเต็มหน้าจอ", key="btn_tree_full", use_container_width=True):
+                                open_fullscreen_tree_dialog()
+                        with col_t_exp:
+                            excel_tree_data = export_tree_view_to_excel(df_for_sku, tree_search)
+                            st.download_button(
+                                label="📥 ส่งออก Excel",
+                                data=excel_tree_data,
+                                file_name=f"Tree_View_Hierarchy_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="btn_tree_export_excel",
+                                use_container_width=True,
+                                help="ดาวน์โหลดข้อมูล Tree View (ลำดับชั้นสินค้า แม่-ลูก) ทั้งหมดเป็นไฟล์ Excel"
+                            )
+                        with col_t_badge:
+                            if active_stock:
+                                st.markdown(f"<div style='text-align:right; font-size:12px; color:#0099ff; padding-top:6px;'>📦 สต็อก: {active_stock}</div>", unsafe_allow_html=True)
+                        
+                        tree_html, is_trunc, total_p = render_tree_view_html(df_for_sku, tree_search, is_fullscreen=False)
+                        components.html(tree_html, height=335)
+                        if is_trunc:
+                            st.caption(f"* แสดง 100 อันดับแรกจากทั้งหมด {total_p:,} สินค้า (กดปุ่ม '📥 ส่งออก Excel' เพื่อดูข้อมูลครบ 100% ทุกรายการ)")
+                        
+                    with tab_grid:
+                        col_s_title, col_s_exp, col_s_btn = st.columns([2.4, 1.1, 1.2])
+                        with col_s_title:
+                            st.markdown(f"**SKU Code (รายสินค้า)**{stock_badge}", unsafe_allow_html=True)
+                        with col_s_exp:
+                            excel_grid = export_sku_to_excel(disp_sku)
+                            st.download_button(
+                                label="📥 ส่งออก Excel",
+                                data=excel_grid,
+                                file_name=f"SKU_Summary_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="btn_sku_grid_export_excel",
+                                use_container_width=True
+                            )
+                        with col_s_btn:
+                            if st.button("⛶ ขยายเต็มหน้าจอ", key="btn_sku_full", use_container_width=True):
+                                open_fullscreen_sku_dialog()
+                        st.dataframe(
+                            disp_sku[['SKU', 'Product', 'Revenue', 'Avg CR', 'Visitors', 'A2C', 'Avg Price', 'Buyers', 'Units_Sold', 'Stock_Available']], 
+                            hide_index=True, use_container_width=True, height=340,
+                            on_select="rerun", selection_mode="multi-row", key="tb_sku",
+                            column_config=col_config_sku
+                        )
+    
+        render_interactive_dashboard(filtered_df, active_stock_name)
 
-    render_interactive_dashboard(filtered_df, active_stock_name)
+    with tab_inventory:
+        if render_inventory_valuation_tab is not None:
+            render_inventory_valuation_tab(base_df, active_stock_name)
+        else:
+            st.error("ไม่พบโมดูล inventory_tab.py กรุณาตรวจสอบไฟล์ในระบบครับ")
