@@ -831,6 +831,7 @@ if check_password():
                         is_unmapped_tt = is_tt & master_df['SKU'].astype(str).str.startswith('TT-')
                         master_df.loc[is_unmapped_tt, 'Category_Desc'] = 'Unmapped (TikTok)'
                         master_df['Category_Desc'] = master_df['Category_Desc'].fillna('Uncategorized')
+                        st.session_state['sku_master_df'] = sku_master_df.copy()
                 except Exception:
                     pass
 
@@ -897,6 +898,7 @@ if check_password():
                                     if 'Category_Desc' in master_df.columns:
                                         master_df = master_df.drop(columns=['Category_Desc'])
                                     master_df = master_df.merge(sku_map, on='SKU', how='left')
+                                    st.session_state['sku_master_df'] = s_sku_df.copy()
                                     break
                             except: pass
                     if 'Category_Desc' in master_df.columns and not master_df['Category_Desc'].isna().all():

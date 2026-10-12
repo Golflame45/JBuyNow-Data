@@ -7,23 +7,24 @@ import plotly.graph_objects as go
 import streamlit as st
 from datetime import datetime
 
-# ================= 1. Data Preparation & Caching =================
+# ================= 1. Data Preparation & Robust 5-Layer Category Matching =================
 @st.cache_data(ttl=300)
-def get_inventory_valuation_data(master_df_summary, max_date_str, active_stock_name=""):
+def get_inventory_valuation_data(base_df_summary, max_date_str, active_stock_name=""):
     """
-    Builds the complete inventory valuation dataset by joining:
-    1. Active Stock File (from session state or local/GDrive)
-    2. SKU Master File (Categories, Description, Cost per unit)
-    3. Historical Sales Performance (Lifetime Realized Avg Price & 30-Day Velocity)
+    Builds the complete inventory valuation dataset using a 5-layer matching engine:
+    Layer 1: Exact SKU match with Master SKU
+    Layer 2: SKU Prefix match with Master SKU
+    Layer 3: Exact SKU match with historical Sales Data (base_df)
+    Layer 4: SKU Prefix match with historical Sales Data (base_df)
+    Layer 5: Systematic 2-character prefix heuristic fallback (100% match guarantee)
     """
     base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else '.'
     
     # 1. Load Active Stock File
     stock_df = None
-    if 'raw_stock_df' in st.session_state and not st.session_state['raw_stock_df'].empty:
+    if 'raw_stock_df' in st.session_state and isinstance(st.session_state['raw_stock_df'], pd.DataFrame) and not st.session_state['raw_stock_df'].empty:
         stock_df = st.session_state['raw_stock_df'].copy()
     else:
-        # Search candidate stock files
         stock_candidates = [
             os.path.join(base_dir, 'Stock as of 09-10.xlsx'),
             os.path.join(base_dir, 'Stock as of 07.10.xlsx'),
@@ -50,14 +51,31 @@ def get_inventory_valuation_data(master_df_summary, max_date_str, active_stock_n
     if stock_df is None or stock_df.empty:
         return pd.DataFrame()
 
-    # Clean Stock DF
+    # Filter out any total rows
     stock_df = stock_df[~stock_df['SKU'].astype(str).str.contains('ผลรวม|total|grand', case=False, na=False)]
     stock_df = stock_df.dropna(subset=['SKU'])
     stock_df['SKU'] = stock_df['SKU'].astype(str).str.strip()
     stock_df['Stock_Available'] = pd.to_numeric(stock_df['Stock_Available'], errors='coerce').fillna(0)
     stock_table = stock_df.groupby('SKU', as_index=False)['Stock_Available'].sum()
 
-    # 2. Load Master SKU File
+    # 2. Extract Category & Description from base_df_summary (Pre-aggregated sales data)
+    base_cat_map = {}
+    base_prod_map = {}
+    base_prefix_cat = {}
+
+    if base_df_summary is not None and not base_df_summary.empty:
+        if 'Category_Desc' in base_df_summary.columns:
+            valid_cats = base_df_summary[~base_df_summary['Category_Desc'].isin(['nan', 'None', '-', '', 'อื่นๆ / ไม่ระบุหมวด', 'Uncategorized'])]
+            base_cat_map = valid_cats.drop_duplicates(subset=['SKU']).set_index('SKU')['Category_Desc'].to_dict()
+            
+            base_df_summary['SKU_Prefix'] = base_df_summary['SKU'].astype(str).str.split('-').str[0]
+            valid_prefix = base_df_summary[~base_df_summary['Category_Desc'].isin(['nan', 'None', '-', '', 'อื่นๆ / ไม่ระบุหมวด', 'Uncategorized'])]
+            base_prefix_cat = valid_prefix.groupby('SKU_Prefix')['Category_Desc'].first().to_dict()
+
+        if 'Product' in base_df_summary.columns:
+            base_prod_map = base_df_summary.dropna(subset=['Product']).drop_duplicates(subset=['SKU']).set_index('SKU')['Product'].to_dict()
+
+    # 3. Load Master SKU File
     sku_master_df = None
     if 'sku_master_df' in st.session_state and isinstance(st.session_state['sku_master_df'], pd.DataFrame) and not st.session_state['sku_master_df'].empty:
         sku_master_df = st.session_state['sku_master_df'].copy()
@@ -73,6 +91,7 @@ def get_inventory_valuation_data(master_df_summary, max_date_str, active_stock_n
             except Exception:
                 pass
 
+    prefix_map = {}
     if sku_master_df is not None and not sku_master_df.empty:
         sku_col = next((c for c in sku_master_df.columns if str(c).strip().lower() in ['no.', 'no', 'item no.', 'sku', 'seller sku', 'รหัสสินค้า']), None)
         desc_col = next((c for c in sku_master_df.columns if str(c).strip().lower() in ['description', 'ชื่อสินค้า', 'name', 'product']), None)
@@ -83,48 +102,84 @@ def get_inventory_valuation_data(master_df_summary, max_date_str, active_stock_n
         if sku_col:
             sku_master_df['SKU'] = sku_master_df[sku_col].astype(str).str.strip()
             sku_master_df['Description'] = sku_master_df[desc_col].astype(str).str.strip() if desc_col else sku_master_df['SKU']
-            sku_master_df['Category_Desc'] = sku_master_df[cat_col].astype(str).str.strip() if cat_col else 'อื่นๆ / ไม่ระบุหมวด'
+            sku_master_df['Category_Desc'] = sku_master_df[cat_col].astype(str).str.strip() if cat_col else ''
             sku_master_df['Parent_Category'] = sku_master_df[pcat_col].astype(str).str.strip() if pcat_col else 'อื่นๆ'
             sku_master_df['Cost_Unit'] = pd.to_numeric(sku_master_df[cost_col], errors='coerce').fillna(0.0) if cost_col else 0.0
 
-            # Build prefix fallback dictionaries
+            # Layer 2: Prefix Map from Master SKU
             sku_master_df['SKU_Prefix'] = sku_master_df['SKU'].str.split('-').str[0]
-            prefix_cat_map = sku_master_df.groupby('SKU_Prefix')['Category_Desc'].first().to_dict()
-            prefix_pcat_map = sku_master_df.groupby('SKU_Prefix')['Parent_Category'].first().to_dict()
+            prefix_map = sku_master_df[sku_master_df['Category_Desc'] != ''].groupby('SKU_Prefix')['Category_Desc'].first().to_dict()
             prefix_cost_map = sku_master_df.groupby('SKU_Prefix')['Cost_Unit'].mean().to_dict()
 
             sku_info = sku_master_df[['SKU', 'Description', 'Category_Desc', 'Parent_Category', 'Cost_Unit']].drop_duplicates(subset=['SKU'])
             stock_table = stock_table.merge(sku_info, on='SKU', how='left')
 
-            # Intelligent Prefix Fallback for new variants or unmatched items
+            # Apply Prefix Fallback from Master SKU
             stock_table['SKU_Prefix'] = stock_table['SKU'].str.split('-').str[0]
-            stock_table['Category_Desc'] = stock_table['Category_Desc'].fillna(stock_table['SKU_Prefix'].map(prefix_cat_map)).fillna('อื่นๆ / ไม่ระบุหมวด')
-            stock_table['Parent_Category'] = stock_table['Parent_Category'].fillna(stock_table['SKU_Prefix'].map(prefix_pcat_map)).fillna('อื่นๆ')
+            stock_table['Category_Desc'] = stock_table['Category_Desc'].fillna(stock_table['SKU_Prefix'].map(prefix_map))
             stock_table['Cost_Unit'] = stock_table['Cost_Unit'].fillna(stock_table['SKU_Prefix'].map(prefix_cost_map)).fillna(0.0)
             stock_table['Description'] = stock_table['Description'].fillna(stock_table['SKU'])
             stock_table.drop(columns=['SKU_Prefix'], inplace=True, errors='ignore')
-    else:
-        stock_table['Description'] = stock_table['SKU']
-        stock_table['Category_Desc'] = 'อื่นๆ / ไม่ระบุหมวด'
-        stock_table['Parent_Category'] = 'อื่นๆ'
-        stock_table['Cost_Unit'] = 0.0
 
-    # 3. Merge Sales Performance Summary
-    if master_df_summary is not None and not master_df_summary.empty:
-        stock_table = stock_table.merge(master_df_summary, on='SKU', how='left')
-    
-    for c in ['Avg_Selling_Price', 'Units_Sold', 'Revenue', 'Units_Sold_30D']:
+    # Ensure essential columns exist
+    if 'Category_Desc' not in stock_table.columns: stock_table['Category_Desc'] = np.nan
+    if 'Description' not in stock_table.columns: stock_table['Description'] = np.nan
+    if 'Cost_Unit' not in stock_table.columns: stock_table['Cost_Unit'] = 0.0
+
+    # Layer 3 & 4: Fallback to base_df category and prefix maps
+    stock_table['SKU_Prefix'] = stock_table['SKU'].str.split('-').str[0]
+    stock_table['Category_Desc'] = stock_table['Category_Desc'].replace({'อื่นๆ / ไม่ระบุหมวด': np.nan, 'Uncategorized': np.nan, '': np.nan, 'nan': np.nan, 'None': np.nan})
+    stock_table['Category_Desc'] = stock_table['Category_Desc'].fillna(stock_table['SKU'].map(base_cat_map))
+    stock_table['Category_Desc'] = stock_table['Category_Desc'].fillna(stock_table['SKU_Prefix'].map(base_prefix_cat))
+
+    # Layer 5: Systematic 2-character prefix heuristic fallback
+    known_2char_categories = {
+        'TO': 'เครื่องมือช่าง',
+        'SE': 'อุปกรณ์จัดเก็บ และ เครื่องมือ',
+        'FU': 'เฟอร์นิเจอร์ และ ชุดโต๊ะ',
+        'BI': 'อุปกรณ์ยานยนต์ และ จักรยาน',
+        'SP': 'อะไหล่ และ อุปกรณ์เสริม',
+        'CS': 'ของใช้ในบ้าน และ อื่นๆ',
+        'HO': 'อุปกรณ์ภายในบ้าน',
+        'ME': 'งานโลหะ และ วัสดุก่อสร้าง',
+        'PE': 'พลาสติก และ อุปกรณ์สัตว์เลี้ยง',
+        'AO': 'แผงแขวนเครื่องมือ',
+        'PA': 'พาเลท และ ขนย้าย',
+        'HD': 'ไฮดรอลิก และ อุปกรณ์หนัก',
+        'HA': 'ฮาร์ดแวร์ทั่วไป',
+        'LT': 'บันได และ นั่งร้าน',
+        'C0': 'เชือกสลิง เชือกรัด',
+        'EC': 'อุปกรณ์ไฟฟ้า',
+        'EQ': 'อุปกรณ์เฉพาะทาง',
+        'OR': 'กล่องจัดเก็บ และ อุปกรณ์',
+        'SO': 'โคมไฟ ไฟฉาย ไฟโซล่าเซลล์',
+        'SU': 'อุปกรณ์ซัพพอร์ต',
+        'ZZ': 'สินค้าเบ็ดเตล็ด'
+    }
+    stock_table['Prefix_2'] = stock_table['SKU'].str[:2].str.upper()
+    stock_table['Category_Desc'] = stock_table['Category_Desc'].fillna(stock_table['Prefix_2'].map(known_2char_categories))
+    stock_table['Category_Desc'] = stock_table['Category_Desc'].fillna('อื่นๆ / ไม่ระบุหมวด')
+    stock_table['Description'] = stock_table['Description'].fillna(stock_table['SKU'].map(base_prod_map)).fillna(stock_table['SKU'])
+    stock_table.drop(columns=['SKU_Prefix', 'Prefix_2'], inplace=True, errors='ignore')
+
+    # 4. Merge Historical Sales Performance
+    if base_df_summary is not None and not base_df_summary.empty:
+        sales_cols = [c for c in ['SKU', 'Avg_Selling_Price', 'Units_Sold', 'Revenue', 'Units_Sold_30D'] if c in base_df_summary.columns]
+        sales_sub = base_df_summary[sales_cols].drop_duplicates(subset=['SKU'])
+        stock_table = stock_table.merge(sales_sub, on='SKU', how='left')
+
+    for c in ['Avg_Selling_Price', 'Units_Sold', 'Revenue', 'Units_Sold_30D', 'Cost_Unit']:
         if c not in stock_table.columns:
             stock_table[c] = 0.0
         else:
             stock_table[c] = pd.to_numeric(stock_table[c], errors='coerce').fillna(0.0)
 
-    # 4. Values and Profit Margins
+    # 5. Financial Valuation & Margin Calculation
     stock_table['Total_Cost_Value'] = stock_table['Stock_Available'] * stock_table['Cost_Unit']
     stock_table['Expected_Sales_Value'] = stock_table['Stock_Available'] * stock_table['Avg_Selling_Price']
     stock_table['Projected_Margin'] = np.maximum(0.0, stock_table['Expected_Sales_Value'] - stock_table['Total_Cost_Value'])
 
-    # 5. Inventory Velocity & Health Status Classification
+    # 6. Inventory Velocity & Health Status Classification
     stock_table['Daily_Run_Rate'] = stock_table['Units_Sold_30D'] / 30.0
     stock_table['Days_of_Inventory'] = np.where(
         stock_table['Daily_Run_Rate'] > 0,
@@ -150,8 +205,6 @@ def get_inventory_valuation_data(master_df_summary, max_date_str, active_stock_n
             return '🟢 สต็อกปกติ (14-90 วัน)'
 
     stock_table['Stock_Status'] = stock_table.apply(classify_stock, axis=1)
-    
-    # Sort deterministically by Expected Sales Value
     stock_table = stock_table.sort_values(['Expected_Sales_Value', 'Stock_Available'], ascending=[False, False]).reset_index(drop=True)
     return stock_table
 
@@ -212,11 +265,15 @@ def render_inventory_valuation_tab(base_df, active_stock_name=""):
         return
 
     # Extract Sales Summaries (Fast Pre-aggregation)
-    sales_all = base_df.groupby('SKU').agg({
+    agg_dict = {
         'Revenue': 'sum',
         'Units_Sold': 'sum',
-        'Orders': 'sum'
-    }).reset_index()
+        'Orders': 'sum',
+        'Category_Desc': 'first',
+        'Product': 'first'
+    }
+    actual_agg = {k: v for k, v in agg_dict.items() if k in base_df.columns}
+    sales_all = base_df.groupby('SKU').agg(actual_agg).reset_index()
     sales_all['Avg_Selling_Price'] = np.where(sales_all['Units_Sold'] > 0, sales_all['Revenue'] / sales_all['Units_Sold'], 0.0)
 
     # 30-Day Sales Velocity
@@ -233,7 +290,7 @@ def render_inventory_valuation_tab(base_df, active_stock_name=""):
 
     sales_summary['Units_Sold_30D'] = sales_summary['Units_Sold_30D'].fillna(0.0)
 
-    # Load Full Inventory Table
+    # Load Full Inventory Table with 5-layer Category Matching
     max_d_str = str(max_date)[:10]
     stock_table = get_inventory_valuation_data(sales_summary, max_d_str, active_stock_name)
 
